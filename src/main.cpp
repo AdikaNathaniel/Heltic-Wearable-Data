@@ -1,42 +1,73 @@
-#include <Arduino.h>
 #include <Wire.h>
-#include "MAX30105.h" // SparkFun MAX3010x library
+#include "MAX30105.h"
+#include "heartRate.h"
+#include "spo2_algorithm.h"
 
 MAX30105 particleSensor;
+
+// Settings for buffer
+#define BUFFER_SIZE 100
+
+uint32_t irBuffer[BUFFER_SIZE]; // Infrared LED sensor data
+uint32_t redBuffer[BUFFER_SIZE]; // Red LED sensor data
+int32_t bufferLength; // Data length
+
+int32_t spo2; // Calculated SPO2 value
+int8_t validSPO2; // Indicator to show if the SPO2 calculation is valid
+int32_t heartRate; // Calculated heart rate value
+int8_t validHeartRate; // Indicator to show if the heart rate calculation is valid
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  Serial.println("Initializing MAX30102...");
 
-  Serial.println("Initializing MAX30102 on SDA=41, SCL=42...");
-
-  // Start I2C on your custom pins
-  Wire.begin(41, 42);
-
-  // Initialize sensor
-  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
-    Serial.println("MAX30102 was not found. Please check wiring/power.");
-    while (1); // Halt if not found
+  // Initialize sensor with correct I2C pins for Heltec V3
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
+    Serial.println("MAX30102 was not found. Please check connections/power.");
+    while (1);
   }
 
-  // Configure the sensor with default settings
-  particleSensor.setup(); // Use default settings for HR & SpO2
-  particleSensor.setPulseAmplitudeRed(0xFF);    // Red LED ON (max brightness)
-  particleSensor.setPulseAmplitudeIR(0xFF);     // IR LED ON (max brightness)
-  particleSensor.setPulseAmplitudeGreen(0x00);  // Green LED OFF
+  Serial.println("Place your finger on the sensor.");
 
-  Serial.println("MAX30102 initialized successfully!");
-  Serial.println("Red + IR LEDs should now be ON at maximum brightness.");
+  particleSensor.setup(); // Configure sensor with default settings
+  particleSensor.setPulseAmplitudeRed(0x0A); // Turn Red LED low to avoid blinding
+  particleSensor.setPulseAmplitudeIR(0x0A);  // Turn IR LED low
 }
 
 void loop() {
-  long irValue = particleSensor.getIR();   // IR LED value
-  long redValue = particleSensor.getRed(); // Red LED value
+  bufferLength = BUFFER_SIZE; // Collect 100 samples
 
-  Serial.print("IR: ");
-  Serial.print(irValue);
-  Serial.print("\tRed: ");
-  Serial.println(redValue);
+  // Read first set of samples
+  for (int i = 0; i < bufferLength; i++) {
+    while (!particleSensor.available()) {
+      particleSensor.check();
+    }
+    redBuffer[i] = particleSensor.getRed();
+    irBuffer[i] = particleSensor.getIR();
+    particleSensor.nextSample();
+  }
 
-  delay(500); // Read every 0.5 seconds
+  // Run the algorithm
+  maxim_heart_rate_and_oxygen_saturation(
+      irBuffer, bufferLength,
+      redBuffer,
+      &spo2, &validSPO2,
+      &heartRate, &validHeartRate);
+
+  Serial.print("Heart Rate: ");
+  if (validHeartRate)
+    Serial.print(heartRate);
+  else
+    Serial.print("Invalid");
+
+  Serial.print(" bpm | SpO2: ");
+  if (validSPO2)
+    Serial.print(spo2);
+  else
+    Serial.print("Invalid");
+
+  Serial.println(" %");
+
+  delay(1000); // Small pause before next reading
 }
