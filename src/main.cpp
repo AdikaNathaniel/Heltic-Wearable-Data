@@ -3,14 +3,27 @@
 #include "heartRate.h"
 #include "spo2_algorithm.h"
 #include "Adafruit_AS726x.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 MAX30105 particleSensor;
 Adafruit_AS726x as7263;
 
-// MAX30102 settings
-#define BUFFER_SIZE 100
-uint32_t irBuffer[BUFFER_SIZE];
-uint32_t redBuffer[BUFFER_SIZE];
+// // WiFi credentials
+// const char* ssid = "YOUR_WIFI_SSID";
+// const char* password = "YOUR_WIFI_PASSWORD";
+// WiFi credentials
+const char* ssid = "Network";
+const char* password = "jehovahofmercy#love";
+
+// API endpoint
+const char* serverURL = "http://localhost:3100/api/v1/vitals-health-data";
+
+// MAX30102 settings - renamed to avoid conflicts
+#define HR_BUFFER_SIZE 100
+uint32_t irBuffer[HR_BUFFER_SIZE];
+uint32_t redBuffer[HR_BUFFER_SIZE];
 int32_t bufferLength;
 int32_t spo2;
 int8_t validSPO2;
@@ -38,6 +51,9 @@ int hrReadings[MAX_READINGS];
 int spo2Readings[MAX_READINGS];
 int readingCount = 0;
 
+// Function declaration to fix the compilation error
+void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2);
+
 // --- Placeholder regression functions ---
 // Replace coefficients with trained values!
 float estimateGlucose(float ch1, float ch2, float ch3) {
@@ -55,6 +71,15 @@ float estimateDiastolicBP(float ch2, float ch5) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi");
   
   Serial.println("Initializing MAX30102...");
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
@@ -146,6 +171,9 @@ void loop() {
         Serial.println(" mmHg");
         Serial.println("========================================");
         
+        // Post data to server
+        postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, 0, 0);
+        
         // Reset for next phase
         readingCount = 0;
         Serial.println("Now switching to MAX30102 sensor for 2 minutes...");
@@ -159,7 +187,7 @@ void loop() {
       // MAX30102 phase: 2 minutes of data collection
       if (currentTime - phaseStartTime < PHASE_DURATION) {
         // --- MAX30102 HR + SpO2 ---
-        bufferLength = BUFFER_SIZE;
+        bufferLength = HR_BUFFER_SIZE;
         for (int i = 0; i < bufferLength; i++) {
           while (!particleSensor.available()) {
             particleSensor.check();
@@ -224,6 +252,9 @@ void loop() {
         Serial.println(" %");
         Serial.println("==========================================");
         
+        // Post data to server
+        postVitalsDataToServer(0, 0, 0, avgHR, avgSPO2);
+        
         // Reset for next phase
         readingCount = 0;
         Serial.println("Now continuing with MAX30102 sensor only...");
@@ -233,7 +264,7 @@ void loop() {
       
     case CONTINUOUS_PHASE:
       // Continuous phase: use only MAX30102
-      bufferLength = BUFFER_SIZE;
+      bufferLength = HR_BUFFER_SIZE;
       for (int i = 0; i < bufferLength; i++) {
         while (!particleSensor.available()) {
           particleSensor.check();
@@ -259,5 +290,67 @@ void loop() {
       
       delay(1000); // Wait 1 second between readings
       break;
+  }
+}
+
+void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2) {
+  // Create JSON object
+  JsonDocument doc;
+  
+  doc["userId"] = "user-001-wearable";
+  doc["inputMethod"] = "wearable";
+  
+  JsonObject bloodPressure = doc["bloodPressure"].to<JsonObject>();
+  bloodPressure["systolic"] = sysBP;
+  bloodPressure["diastolic"] = diaBP;
+  
+  doc["heartRate"] = heartRate;
+  doc["spO2"] = spO2;
+  doc["bloodGlucose"] = glucose;
+  
+  // Serialize JSON to string
+  String jsonString;
+  serializeJson(doc, jsonString);
+  
+  // Send HTTP POST request
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverURL);
+    http.addHeader("Content-Type", "application/json");
+    
+    Serial.print("Posting data to server: ");
+    Serial.println(jsonString);
+    
+    int httpResponseCode = http.POST(jsonString);
+    
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.print("HTTP Response code: ");
+      Serial.println(httpResponseCode);
+      Serial.print("Server response: ");
+      Serial.println(response);
+      Serial.println("Data posted successfully!");
+    } else {
+      Serial.print("Error posting data. Error code: ");
+      Serial.println(httpResponseCode);
+    }
+    
+    http.end();
+  } else {
+    Serial.println("WiFi disconnected. Cannot post data.");
+    // Try to reconnect
+    WiFi.begin(ssid, password);
+    Serial.print("Attempting to reconnect to WiFi");
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nReconnected to WiFi");
+    } else {
+      Serial.println("\nFailed to reconnect to WiFi");
+    }
   }
 }
