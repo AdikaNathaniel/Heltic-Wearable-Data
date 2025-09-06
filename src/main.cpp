@@ -10,9 +10,6 @@
 MAX30105 particleSensor;
 Adafruit_AS726x as7263;
 
-// // WiFi credentials
-// const char* ssid = "YOUR_WIFI_SSID";
-// const char* password = "YOUR_WIFI_PASSWORD";
 // WiFi credentials
 const char* ssid = "Network";
 const char* password = "jehovahofmercy#love";
@@ -34,6 +31,7 @@ int8_t validHeartRate;
 enum OperationState {
   AS7263_PHASE,
   MAX30102_PHASE,
+  POST_DATA_PHASE,
   CONTINUOUS_PHASE
 };
 OperationState currentState = AS7263_PHASE;
@@ -51,7 +49,14 @@ int hrReadings[MAX_READINGS];
 int spo2Readings[MAX_READINGS];
 int readingCount = 0;
 
-// Function declaration to fix the compilation error
+// Variables to store final averages
+float avgGlucose = 0;
+float avgSysBP = 0;
+float avgDiaBP = 0;
+float avgHR = 0;
+float avgSPO2 = 0;
+
+// Function declaration
 void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2);
 
 // --- Placeholder regression functions ---
@@ -149,7 +154,9 @@ void loop() {
         delay(2000); // Wait 2 seconds between readings
       } else {
         // 2 minutes have passed - calculate and display averages
-        float avgGlucose = 0, avgSysBP = 0, avgDiaBP = 0;
+        avgGlucose = 0;
+        avgSysBP = 0;
+        avgDiaBP = 0;
         
         for (int i = 0; i < readingCount; i++) {
           avgGlucose += glucoseReadings[i];
@@ -170,9 +177,6 @@ void loop() {
         Serial.print(avgDiaBP);
         Serial.println(" mmHg");
         Serial.println("========================================");
-        
-        // Post data to server
-        postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, 0, 0);
         
         // Reset for next phase
         readingCount = 0;
@@ -226,7 +230,8 @@ void loop() {
         delay(1000); // Wait 1 second between readings
       } else {
         // 2 minutes have passed - calculate and display averages
-        float avgHR = 0, avgSPO2 = 0;
+        avgHR = 0;
+        avgSPO2 = 0;
         int validHRCount = 0, validSPO2Count = 0;
         
         for (int i = 0; i < readingCount; i++) {
@@ -252,14 +257,20 @@ void loop() {
         Serial.println(" %");
         Serial.println("==========================================");
         
-        // Post data to server
-        postVitalsDataToServer(0, 0, 0, avgHR, avgSPO2);
-        
-        // Reset for next phase
-        readingCount = 0;
-        Serial.println("Now continuing with MAX30102 sensor only...");
-        currentState = CONTINUOUS_PHASE;
+        // Move to post data phase
+        currentState = POST_DATA_PHASE;
       }
+      break;
+      
+    case POST_DATA_PHASE:
+      // Post all data to server
+      Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
+      postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2);
+      
+      // Reset for next phase
+      readingCount = 0;
+      Serial.println("Now continuing with MAX30102 sensor only...");
+      currentState = CONTINUOUS_PHASE;
       break;
       
     case CONTINUOUS_PHASE:
@@ -318,7 +329,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     http.begin(serverURL);
     http.addHeader("Content-Type", "application/json");
     
-    Serial.print("Posting data to server: ");
+    Serial.print("Posting ALL data to server: ");
     Serial.println(jsonString);
     
     int httpResponseCode = http.POST(jsonString);
@@ -329,7 +340,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
       Serial.println(httpResponseCode);
       Serial.print("Server response: ");
       Serial.println(response);
-      Serial.println("Data posted successfully!");
+      Serial.println("All vital signs posted successfully!");
     } else {
       Serial.print("Error posting data. Error code: ");
       Serial.println(httpResponseCode);
@@ -349,6 +360,8 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     }
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("\nReconnected to WiFi");
+      // Try posting again
+      postVitalsDataToServer(glucose, sysBP, diaBP, heartRate, spO2);
     } else {
       Serial.println("\nFailed to reconnect to WiFi");
     }
