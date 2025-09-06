@@ -31,8 +31,7 @@ int8_t validHeartRate;
 enum OperationState {
   AS7263_PHASE,
   MAX30102_PHASE,
-  POST_DATA_PHASE,
-  CONTINUOUS_PHASE
+  POST_DATA_PHASE
 };
 OperationState currentState = AS7263_PHASE;
 
@@ -58,6 +57,7 @@ float avgSPO2 = 0;
 
 // Function declaration
 void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2);
+void resetReadings();
 
 // --- Placeholder regression functions ---
 // Replace coefficients with trained values!
@@ -179,7 +179,7 @@ void loop() {
         Serial.println("========================================");
         
         // Reset for next phase
-        readingCount = 0;
+        resetReadings();
         Serial.println("Now switching to MAX30102 sensor for 2 minutes...");
         Serial.println("Place your finger on the MAX30102 sensor.");
         phaseStartTime = millis();
@@ -267,40 +267,25 @@ void loop() {
       Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
       postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2);
       
-      // Reset for next phase
-      readingCount = 0;
-      Serial.println("Now continuing with MAX30102 sensor only...");
-      currentState = CONTINUOUS_PHASE;
+      // Reset for next cycle
+      resetReadings();
+      Serial.println("Starting new cycle with AS7263 sensor for 2 minutes...");
+      Serial.println("Place your finger on the AS7263 sensor.");
+      phaseStartTime = millis();
+      currentState = AS7263_PHASE;
       break;
-      
-    case CONTINUOUS_PHASE:
-      // Continuous phase: use only MAX30102
-      bufferLength = HR_BUFFER_SIZE;
-      for (int i = 0; i < bufferLength; i++) {
-        while (!particleSensor.available()) {
-          particleSensor.check();
-        }
-        redBuffer[i] = particleSensor.getRed();
-        irBuffer[i] = particleSensor.getIR();
-        particleSensor.nextSample();
-      }
-      
-      maxim_heart_rate_and_oxygen_saturation(
-        irBuffer, bufferLength,
-        redBuffer,
-        &spo2, &validSPO2,
-        &heartRate, &validHeartRate);
-      
-      Serial.print("Heart Rate: ");
-      if (validHeartRate) Serial.print(heartRate);
-      else Serial.print("Invalid");
-      Serial.print(" bpm | SpO2: ");
-      if (validSPO2) Serial.print(spo2);
-      else Serial.print("Invalid");
-      Serial.println(" %");
-      
-      delay(1000); // Wait 1 second between readings
-      break;
+  }
+}
+
+void resetReadings() {
+  // Reset all reading arrays and counters
+  readingCount = 0;
+  for (int i = 0; i < MAX_READINGS; i++) {
+    glucoseReadings[i] = 0;
+    sysBPReadings[i] = 0;
+    diaBPReadings[i] = 0;
+    hrReadings[i] = 0;
+    spo2Readings[i] = 0;
   }
 }
 
