@@ -85,6 +85,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
                            float accelX, float accelY, float accelZ, 
                            float gyroX, float gyroY, float gyroZ);
 void resetReadings();
+String getTimestamp();
 
 // --- Placeholder regression functions ---
 // Replace coefficients with trained values!
@@ -106,7 +107,8 @@ float readTMP117() {
   Wire.write(TMP117_TEMP_REG);
   Wire.endTransmission(false);
 
-  Wire.requestFrom(TMP117_ADDR, (uint8_t)2);
+  // Fix the ambiguous function call by using explicit uint8_t parameters
+  Wire.requestFrom((uint8_t)TMP117_ADDR, (uint8_t)2);
 
   if (Wire.available() == 2) {
     uint16_t raw = (Wire.read() << 8) | Wire.read();
@@ -134,6 +136,19 @@ float getAverageTemp(int samples = 5) {
   return (valid > 0) ? sum / valid : NAN;
 }
 
+// Function to get current timestamp in ISO 8601 format
+String getTimestamp() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return "2023-01-01T00:00:00Z";
+  }
+  
+  char timeString[25];
+  strftime(timeString, sizeof(timeString), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+  return String(timeString);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -149,6 +164,9 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("\nConnected to WiFi");
+  
+  // Configure time (you may need to adjust for your timezone)
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   
   // Initialize MAX30102
   Serial.println("Initializing MAX30102...");
@@ -537,6 +555,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   
   doc["userId"] = "user-001-wearable";
   doc["inputMethod"] = "wearable";
+  doc["timestamp"] = getTimestamp(); // Add timestamp to the JSON
   
   JsonObject bloodPressure = doc["bloodPressure"].to<JsonObject>();
   bloodPressure["systolic"] = sysBP;
