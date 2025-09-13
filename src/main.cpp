@@ -13,6 +13,11 @@ MAX30105 particleSensor;
 Adafruit_AS726x as7263;
 BMI270 bmi;
 
+// TMP117 Temperature Sensor
+#define TMP117_ADDR 0x48   // Default I2C address
+#define TMP117_TEMP_REG 0x00
+#define CALIBRATION_OFFSET 3.0   // Adjust this after testing (2.0–4.0 °C works for most cases)
+
 // WiFi credentials
 const char* ssid = "Network";
 const char* password = "jehovahofmercy#love";
@@ -49,6 +54,8 @@ float sysBPReadings[MAX_READINGS];
 float diaBPReadings[MAX_READINGS];
 int hrReadings[MAX_READINGS];
 int spo2Readings[MAX_READINGS];
+float tempReadings[MAX_READINGS];
+float bodyTempReadings[MAX_READINGS];
 float accelXReadings[MAX_READINGS];
 float accelYReadings[MAX_READINGS];
 float accelZReadings[MAX_READINGS];
@@ -63,6 +70,8 @@ float avgSysBP = 0;
 float avgDiaBP = 0;
 float avgHR = 0;
 float avgSPO2 = 0;
+float avgTemp = 0;
+float avgBodyTemp = 0;
 float avgAccelX = 0;
 float avgAccelY = 0;
 float avgAccelZ = 0;
@@ -71,7 +80,8 @@ float avgGyroY = 0;
 float avgGyroZ = 0;
 
 // Function declarations
-void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2, 
+void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2,
+                           float temperature, float bodyTemperature,
                            float accelX, float accelY, float accelZ, 
                            float gyroX, float gyroY, float gyroZ);
 void resetReadings();
@@ -88,6 +98,40 @@ float estimateSystolicBP(float ch1, float ch4, float ch6) {
 
 float estimateDiastolicBP(float ch2, float ch5) {
   return 70.0 + 0.03 * ch2 - 0.015 * ch5;
+}
+
+// Function to read raw temperature from TMP117
+float readTMP117() {
+  Wire.beginTransmission(TMP117_ADDR);
+  Wire.write(TMP117_TEMP_REG);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(TMP117_ADDR, (uint8_t)2);
+
+  if (Wire.available() == 2) {
+    uint16_t raw = (Wire.read() << 8) | Wire.read();
+
+    // TMP117: signed 16-bit value, 1 LSB = 1/128 °C
+    float temperature = (int16_t)raw / 128.0;
+    return temperature;
+  }
+
+  return NAN; // Not a number if read failed
+}
+
+// Function to get an averaged temperature reading
+float getAverageTemp(int samples = 5) {
+  float sum = 0;
+  int valid = 0;
+  for (int i = 0; i < samples; i++) {
+    float t = readTMP117();
+    if (!isnan(t)) {
+      sum += t;
+      valid++;
+    }
+    delay(50); // small delay between samples
+  }
+  return (valid > 0) ? sum / valid : NAN;
 }
 
 void setup() {
@@ -135,6 +179,9 @@ void setup() {
   }
   Serial.println("BMI270 initialized!");
   
+  // Initialize TMP117
+  Serial.println("TMP117 Temperature Sensor Initialized");
+  
   Serial.println("Starting with AS7263 sensor for 2 minutes...");
   Serial.println("Place your finger on the AS7263 sensor.");
   phaseStartTime = millis();
@@ -160,6 +207,10 @@ void loop() {
         float sysBP = estimateSystolicBP(channels[0], channels[3], channels[5]);
         float diaBP = estimateDiastolicBP(channels[1], channels[4]);
         
+        // --- TMP117 Temperature ---
+        float skinTemp = getAverageTemp();
+        float bodyTemp = skinTemp + CALIBRATION_OFFSET;
+        
         // --- BMI270 Motion Data ---
         bmi.getSensorData();
         float ax = bmi.data.accelX;
@@ -174,6 +225,8 @@ void loop() {
           glucoseReadings[readingCount] = glucose;
           sysBPReadings[readingCount] = sysBP;
           diaBPReadings[readingCount] = diaBP;
+          tempReadings[readingCount] = skinTemp;
+          bodyTempReadings[readingCount] = bodyTemp;
           accelXReadings[readingCount] = ax;
           accelYReadings[readingCount] = ay;
           accelZReadings[readingCount] = az;
@@ -196,6 +249,12 @@ void loop() {
         Serial.print(diaBP);
         Serial.println(" mmHg");
         
+        Serial.print("Skin Temperature: ");
+        Serial.print(skinTemp, 2);
+        Serial.print(" °C | Estimated Body Temperature: ");
+        Serial.print(bodyTemp, 2);
+        Serial.println(" °C");
+        
         Serial.print("Accel (m/s^2) X: "); Serial.print(ax, 2);
         Serial.print(" Y: "); Serial.print(ay, 2);
         Serial.print(" Z: "); Serial.println(az, 2);
@@ -211,6 +270,8 @@ void loop() {
         avgGlucose = 0;
         avgSysBP = 0;
         avgDiaBP = 0;
+        avgTemp = 0;
+        avgBodyTemp = 0;
         avgAccelX = 0;
         avgAccelY = 0;
         avgAccelZ = 0;
@@ -222,6 +283,8 @@ void loop() {
           avgGlucose += glucoseReadings[i];
           avgSysBP += sysBPReadings[i];
           avgDiaBP += diaBPReadings[i];
+          avgTemp += tempReadings[i];
+          avgBodyTemp += bodyTempReadings[i];
           avgAccelX += accelXReadings[i];
           avgAccelY += accelYReadings[i];
           avgAccelZ += accelZReadings[i];
@@ -233,6 +296,8 @@ void loop() {
         avgGlucose /= readingCount;
         avgSysBP /= readingCount;
         avgDiaBP /= readingCount;
+        avgTemp /= readingCount;
+        avgBodyTemp /= readingCount;
         avgAccelX /= readingCount;
         avgAccelY /= readingCount;
         avgAccelZ /= readingCount;
@@ -248,6 +313,12 @@ void loop() {
         Serial.print(" mmHg | Average DiaBP: ");
         Serial.print(avgDiaBP);
         Serial.println(" mmHg");
+        
+        Serial.print("Average Skin Temperature: ");
+        Serial.print(avgTemp, 2);
+        Serial.print(" °C | Average Body Temperature: ");
+        Serial.print(avgBodyTemp, 2);
+        Serial.println(" °C");
         
         Serial.print("Average Accel (m/s^2) X: "); Serial.print(avgAccelX, 2);
         Serial.print(" Y: "); Serial.print(avgAccelY, 2);
@@ -287,6 +358,10 @@ void loop() {
           &spo2, &validSPO2,
           &heartRate, &validHeartRate);
         
+        // --- TMP117 Temperature ---
+        float skinTemp = getAverageTemp();
+        float bodyTemp = skinTemp + CALIBRATION_OFFSET;
+        
         // --- BMI270 Motion Data ---
         bmi.getSensorData();
         float ax = bmi.data.accelX;
@@ -300,6 +375,8 @@ void loop() {
         if (readingCount < MAX_READINGS) {
           if (validHeartRate) hrReadings[readingCount] = heartRate;
           if (validSPO2) spo2Readings[readingCount] = spo2;
+          tempReadings[readingCount] = skinTemp;
+          bodyTempReadings[readingCount] = bodyTemp;
           accelXReadings[readingCount] = ax;
           accelYReadings[readingCount] = ay;
           accelZReadings[readingCount] = az;
@@ -322,6 +399,12 @@ void loop() {
         else Serial.print("Invalid");
         Serial.println(" %");
         
+        Serial.print("Skin Temperature: ");
+        Serial.print(skinTemp, 2);
+        Serial.print(" °C | Estimated Body Temperature: ");
+        Serial.print(bodyTemp, 2);
+        Serial.println(" °C");
+        
         Serial.print("Accel (m/s^2) X: "); Serial.print(ax, 2);
         Serial.print(" Y: "); Serial.print(ay, 2);
         Serial.print(" Z: "); Serial.println(az, 2);
@@ -336,6 +419,8 @@ void loop() {
         // 2 minutes have passed - calculate and display averages
         avgHR = 0;
         avgSPO2 = 0;
+        avgTemp = 0;
+        avgBodyTemp = 0;
         avgAccelX = 0;
         avgAccelY = 0;
         avgAccelZ = 0;
@@ -356,6 +441,8 @@ void loop() {
             validSPO2Count++;
           }
           
+          avgTemp += tempReadings[i];
+          avgBodyTemp += bodyTempReadings[i];
           avgAccelX += accelXReadings[i];
           avgAccelY += accelYReadings[i];
           avgAccelZ += accelZReadings[i];
@@ -367,6 +454,8 @@ void loop() {
         if (validHRCount > 0) avgHR /= validHRCount;
         if (validSPO2Count > 0) avgSPO2 /= validSPO2Count;
         
+        avgTemp /= readingCount;
+        avgBodyTemp /= readingCount;
         avgAccelX /= readingCount;
         avgAccelY /= readingCount;
         avgAccelZ /= readingCount;
@@ -380,6 +469,12 @@ void loop() {
         Serial.print(" bpm | Average SpO2: ");
         Serial.print(avgSPO2);
         Serial.println(" %");
+        
+        Serial.print("Average Skin Temperature: ");
+        Serial.print(avgTemp, 2);
+        Serial.print(" °C | Average Body Temperature: ");
+        Serial.print(avgBodyTemp, 2);
+        Serial.println(" °C");
         
         Serial.print("Average Accel (m/s^2) X: "); Serial.print(avgAccelX, 2);
         Serial.print(" Y: "); Serial.print(avgAccelY, 2);
@@ -399,6 +494,7 @@ void loop() {
       // Post all data to server
       Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
       postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
+                            avgTemp, avgBodyTemp,
                             avgAccelX, avgAccelY, avgAccelZ,
                             avgGyroX, avgGyroY, avgGyroZ);
       
@@ -421,6 +517,8 @@ void resetReadings() {
     diaBPReadings[i] = 0;
     hrReadings[i] = 0;
     spo2Readings[i] = 0;
+    tempReadings[i] = 0;
+    bodyTempReadings[i] = 0;
     accelXReadings[i] = 0;
     accelYReadings[i] = 0;
     accelZReadings[i] = 0;
@@ -431,6 +529,7 @@ void resetReadings() {
 }
 
 void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2,
+                           float temperature, float bodyTemperature,
                            float accelX, float accelY, float accelZ,
                            float gyroX, float gyroY, float gyroZ) {
   // Create JSON object
@@ -446,6 +545,11 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   doc["heartRate"] = heartRate;
   doc["spO2"] = spO2;
   doc["bloodGlucose"] = glucose;
+  
+  // Add temperature data
+  JsonObject tempData = doc["temperature"].to<JsonObject>();
+  tempData["skin"] = temperature;
+  tempData["body"] = bodyTemperature;
   
   // Add motion data
   JsonObject motion = doc["motion"].to<JsonObject>();
@@ -502,6 +606,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
       Serial.println("\nReconnected to WiFi");
       // Try posting again
       postVitalsDataToServer(glucose, sysBP, diaBP, heartRate, spO2,
+                            temperature, bodyTemperature,
                             accelX, accelY, accelZ,
                             gyroX, gyroY, gyroZ);
     } else {
