@@ -7,6 +7,9 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <SparkFun_BMI270_Arduino_Library.h>
+#include <FS.h>
+#include <SPIFFS.h>
+#include <time.h>
 
 // Sensor objects
 MAX30105 particleSensor;
@@ -22,8 +25,9 @@ BMI270 bmi;
 const char* ssid = "Network";
 const char* password = "jehovahofmercy#love";
 
-// API endpoint
-const char* serverURL = "http://localhost:3100/api/v1/vitals-health-data";
+// API endpoints
+const char* serverURL = "http://192.168.43.64:3100/api/v1/vitals-health-data";
+const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
 
 // MAX30102 settings
 #define HR_BUFFER_SIZE 100
@@ -79,6 +83,12 @@ float avgGyroX = 0;
 float avgGyroY = 0;
 float avgGyroZ = 0;
 
+// Data logging variables
+bool wifiConnected = false;
+String csvData = "";
+unsigned long lastDataLogTime = 0;
+const unsigned long DATA_LOG_INTERVAL = 1000; // Log data every second
+
 // Function declarations
 void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2,
                            float temperature, float bodyTemperature,
@@ -86,9 +96,15 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
                            float gyroX, float gyroY, float gyroZ);
 void resetReadings();
 String getTimestamp();
+void logDataToCSV(String timestamp, String sensorType, String data);
+void saveDataToFlash();
+void readDataFromFlash();
+void uploadStoredData();
+void uploadCSVToServer();
+void initializeSPIFFS();
+String formatCSVRow(String timestamp, String sensorType, String data);
 
 // --- Placeholder regression functions ---
-// Replace coefficients with trained values!
 float estimateGlucose(float ch1, float ch2, float ch3) {
   return 80.0 + 0.05 * ch1 - 0.03 * ch2 + 0.02 * ch3;
 }
@@ -107,18 +123,15 @@ float readTMP117() {
   Wire.write(TMP117_TEMP_REG);
   Wire.endTransmission(false);
 
-  // Fix the ambiguous function call by using explicit uint8_t parameters
   Wire.requestFrom((uint8_t)TMP117_ADDR, (uint8_t)2);
 
   if (Wire.available() == 2) {
     uint16_t raw = (Wire.read() << 8) | Wire.read();
-
-    // TMP117: signed 16-bit value, 1 LSB = 1/128 °C
     float temperature = (int16_t)raw / 128.0;
     return temperature;
   }
 
-  return NAN; // Not a number if read failed
+  return NAN;
 }
 
 // Function to get an averaged temperature reading
@@ -131,7 +144,7 @@ float getAverageTemp(int samples = 5) {
       sum += t;
       valid++;
     }
-    delay(50); // small delay between samples
+    delay(50);
   }
   return (valid > 0) ? sum / valid : NAN;
 }
@@ -149,26 +162,319 @@ String getTimestamp() {
   return String(timeString);
 }
 
+// Initialize SPIFFS for data storage
+void initializeSPIFFS() {
+  if(!SPIFFS.begin(true)){
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    return;
+  }
+  Serial.println("SPIFFS initialized successfully");
+
+  if (!SPIFFS.exists("/vitals_data.csv")) {
+    File file = SPIFFS.open("/vitals_data.csv", FILE_WRITE);
+    if (file) {
+      String header = "timestamp,sensorType,glucose,sysBP,diaBP,hr,spo2,skinTemp,bodyTemp,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
+      file.print(header);
+      file.close();
+      Serial.println("CSV header written to file.");
+    } else {
+      Serial.println("Failed to create CSV file with header.");
+    }
+  }
+}
+
+// Format CSV row with timestamp, sensorType, and data
+String formatCSVRow(String timestamp, String sensorType, String data) {
+  return timestamp + "," + sensorType + "," + data + "\n";
+}
+
+// Log data to CSV format
+void logDataToCSV(String timestamp, String sensorType, String data) {
+  String csvRow = formatCSVRow(timestamp, sensorType, data);
+  csvData += csvRow;
+  
+  if (!wifiConnected && millis() - lastDataLogTime > 10000) {
+    saveDataToFlash();
+    lastDataLogTime = millis();
+  }
+}
+
+// Save data to flash memory
+void saveDataToFlash() {
+  if (csvData.length() > 0) {
+    File file = SPIFFS.open("/vitals_data.csv", FILE_APPEND);
+    if(!file){
+      Serial.println("Failed to open file for appending");
+      return;
+    }
+    if(file.print(csvData)){
+      Serial.println("Data saved to flash: " + String(csvData.length()) + " bytes");
+    } else {
+      Serial.println("Append failed");
+    }
+    file.close();
+    csvData = "";
+  }
+}
+
+// Read data from flash memory
+void readDataFromFlash() {
+  File file = SPIFFS.open("/vitals_data.csv");
+  if(!file){
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+  
+  Serial.println("Stored data from flash:");
+  while(file.available()){
+    Serial.write(file.read());
+  }
+  file.close();
+}
+
+// Validate CSV format
+bool validateCSV(String csvContent) {
+  // Expected number of columns: 15 (timestamp, sensorType, glucose, sysBP, diaBP, hr, spo2, skinTemp, bodyTemp, accelX, accelY, accelZ, gyroX, gyroY, gyroZ)
+  const int EXPECTED_COLUMNS = 14;
+  String lines[10]; // Check first 10 lines to avoid memory issues
+  int lineCount = 0;
+  
+  // Split content into lines
+  int start = 0;
+  int end = csvContent.indexOf('\n');
+  while (end != -1 && lineCount < 10) {
+    lines[lineCount] = csvContent.substring(start, end);
+    start = end + 1;
+    end = csvContent.indexOf('\n', start);
+    lineCount++;
+  }
+  
+  // Check each line
+  for (int i = 0; i < lineCount; i++) {
+    String line = lines[i];
+    int commaCount = 0;
+    for (char c : line) {
+      if (c == ',') commaCount++;
+    }
+    if (commaCount != EXPECTED_COLUMNS - 1) {
+      Serial.print("Invalid CSV line: ");
+      Serial.println(line);
+      Serial.print("Expected ");
+      Serial.print(EXPECTED_COLUMNS);
+      Serial.print(" columns, found ");
+      Serial.println(commaCount + 1);
+      return false;
+    }
+    // Check if sensorType is valid
+    String fields[EXPECTED_COLUMNS];
+    int fieldIndex = 0;
+    start = 0;
+    end = line.indexOf(',');
+    while (end != -1 && fieldIndex < EXPECTED_COLUMNS) {
+      fields[fieldIndex] = line.substring(start, end);
+      start = end + 1;
+      end = line.indexOf(',', start);
+      fieldIndex++;
+    }
+    fields[fieldIndex] = line.substring(start);
+    if (fields[1] != "AS7263" && fields[1] != "MAX30102" && fields[1] != "AS7263_AVG" && fields[1] != "MAX30102_AVG" && fields[1] != "FINAL_AVG") {
+      Serial.print("Invalid sensorType in CSV: ");
+      Serial.println(fields[1]);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Upload CSV file to server using form-data
+void uploadCSVToServer() {
+  File file = SPIFFS.open("/vitals_data.csv");
+  if (!file || file.size() == 0) {
+    Serial.println("No CSV file to upload or file is empty");
+    if (file) file.close();
+    return;
+  }
+  
+  Serial.println("Uploading CSV file to server...");
+  Serial.print("File size: ");
+  Serial.println(file.size());
+  
+  // Check file size
+  const size_t MAX_FILE_SIZE = 1000400; // 100KB threshold
+  if (file.size() > MAX_FILE_SIZE) {
+    Serial.println("DEBUG: CSV file size exceeds threshold.");
+    Serial.print("File size: ");
+    Serial.print(file.size());
+    Serial.println(" bytes (Max allowed: " + String(MAX_FILE_SIZE) + " bytes)");
+    file.close();
+    return;
+  }
+  
+  // Read file in chunks to avoid memory issues
+  String fileContent = "";
+  fileContent.reserve(file.size() + 1);
+  size_t totalRead = 0;
+  const size_t CHUNK_SIZE = 4096; // 4KB chunks
+  char buffer[CHUNK_SIZE + 1];
+  
+  while (file.available() && totalRead < MAX_FILE_SIZE) {
+    size_t toRead = min(CHUNK_SIZE, (size_t)file.available());
+    size_t readBytes = file.readBytes(buffer, toRead);
+    buffer[readBytes] = '\0'; // Null-terminate
+    fileContent += String(buffer);
+    totalRead += readBytes;
+  }
+  file.close();
+  
+  Serial.print("File content length: ");
+  Serial.println(fileContent.length());
+  Serial.println("First 200 chars of CSV:");
+  Serial.println(fileContent.substring(0, min(200, (int)fileContent.length())));
+  
+  // Debug Step 1: Validate CSV format
+  if (!validateCSV(fileContent)) {
+    Serial.println("DEBUG: Invalid CSV format detected.");
+    return;
+  }
+  
+  HTTPClient http;
+  http.begin(csvUploadURL);
+  
+  String boundary = "--------------------------" + String(millis());
+  http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+  
+  String formData = "--" + boundary + "\r\n";
+  formData += "Content-Disposition: form-data; name=\"file\"; filename=\"vitals_data.csv\"\r\n";
+  formData += "Content-Type: text/csv\r\n\r\n";
+  
+  String payload = formData + fileContent + "\r\n--" + boundary + "--\r\n";
+  
+  // Debug Step 2: Check payload size
+  const size_t MAX_PAYLOAD_SIZE = 8002400; // 100KB
+  if (payload.length() > MAX_PAYLOAD_SIZE) {
+    Serial.println("DEBUG: Payload size exceeds threshold.");
+    Serial.print("Payload size: ");
+    Serial.print(payload.length());
+    Serial.println(" bytes (Max allowed: " + String(MAX_PAYLOAD_SIZE) + " bytes)");
+    return;
+  }
+  
+  // Debug Step 3: Test for authentication
+  HTTPClient testHttp;
+  testHttp.begin(csvUploadURL);
+  testHttp.addHeader("Content-Type", "application/json");
+  String testPayload = "{\"test\":\"ping\"}";
+  int testResponseCode = testHttp.POST(testPayload);
+  if (testResponseCode == 401 || testResponseCode == 403) {
+    Serial.println("DEBUG: Server authentication required (401/403 detected).");
+    Serial.println("Please verify if the server requires an API key or token.");
+    testHttp.end();
+    http.end();
+    return;
+  } else if (testResponseCode == 500) {
+    Serial.println("DEBUG: Test request also returned 500. Likely a server-side bug.");
+    Serial.print("Test request response: ");
+    Serial.println(testHttp.getString());
+  } else {
+    Serial.println("DEBUG: Test request succeeded or returned different error.");
+    Serial.print("Test response code: ");
+    Serial.println(testResponseCode);
+  }
+  testHttp.end();
+  
+  // Send the actual request
+  int httpResponseCode = http.POST(payload);
+  
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+    Serial.print("Server response: ");
+    Serial.println(response);
+    
+    if (httpResponseCode == 500) {
+      Serial.println("CSV UPLOAD SERVER ERROR: The server encountered an internal error.");
+      Serial.println("Possible causes not ruled out:");
+      Serial.println("- Invalid CSV format (ruled out by local validation)");
+      Serial.println("- File too large (ruled out by size check)");
+      Serial.println("- Server authentication required (check test request result)");
+      Serial.println("- Bug in server CSV processing (likely if test request also fails)");
+    }
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, response);
+    
+    if (!error) {
+      const char* message = doc["message"];
+      bool success = doc["success"];
+      const char* id = doc["result"]["id"] | "";
+      const char* statusCode = doc["statusCode"] | "";
+      
+      Serial.println("=== CSV UPLOAD SUMMARY ===");
+      Serial.print("Message: "); Serial.println(message);
+      Serial.print("Success: "); Serial.println(success ? "true" : "false");
+      Serial.print("ID: "); Serial.println(id);
+      Serial.print("Status Code: "); Serial.println(statusCode);
+      Serial.println("==========================");
+
+      if (success) {
+        Serial.println("Upload successful, deleting local file.");
+        SPIFFS.remove("/vitals_data.csv");
+        File newFile = SPIFFS.open("/vitals_data.csv", FILE_WRITE);
+        if (newFile) {
+          String header = "timestamp,sensorType,glucose,sysBP,diaBP,hr,spo2,skinTemp,bodyTemp,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
+          newFile.print(header);
+          newFile.close();
+        }
+      }
+    } else {
+      Serial.print("JSON parsing failed: ");
+      Serial.println(error.c_str());
+    }
+  } else {
+    Serial.print("Error uploading CSV. Error code: ");
+    Serial.println(httpResponseCode);
+  }
+  
+  http.end();
+}
+
+// Upload stored data to server
+void uploadStoredData() {
+  if (SPIFFS.exists("/vitals_data.csv")) {
+    uploadCSVToServer();
+  } else {
+    Serial.println("No stored data to upload");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  // Initialize I2C with ESP32 pins
-  Wire.begin(41, 42);  // SDA = 41, SCL = 42
+  initializeSPIFFS();
   
-  // Connect to WiFi
+  Wire.begin(41, 42);
+  
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  
+  unsigned long wifiStartTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStartTime < 10000) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi");
   
-  // Configure time (you may need to adjust for your timezone)
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected to WiFi");
+    wifiConnected = true;
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    uploadStoredData();
+  } else {
+    Serial.println("\nFailed to connect to WiFi. Operating in offline mode.");
+    wifiConnected = false;
+  }
   
-  // Initialize MAX30102
   Serial.println("Initializing MAX30102...");
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
     Serial.println("MAX30102 not found. Check wiring.");
@@ -179,7 +485,6 @@ void setup() {
   particleSensor.setPulseAmplitudeRed(0x0A);
   particleSensor.setPulseAmplitudeIR(0x0A);
   
-  // Initialize AS7263
   Serial.println("Initializing AS7263...");
   if (!as7263.begin()) {
     Serial.println("AS7263 not found. Check wiring.");
@@ -189,7 +494,6 @@ void setup() {
   as7263.setIntegrationTime(100);
   as7263.setGain(3);
   
-  // Initialize BMI270
   Serial.println("Initializing BMI270...");
   if (bmi.beginI2C() != BMI2_OK) {
     Serial.println("Could not find a valid BMI270 sensor, check wiring!");
@@ -197,7 +501,6 @@ void setup() {
   }
   Serial.println("BMI270 initialized!");
   
-  // Initialize TMP117
   Serial.println("TMP117 Temperature Sensor Initialized");
   
   Serial.println("Starting with AS7263 sensor for 2 minutes...");
@@ -209,13 +512,21 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
   
+  if (WiFi.status() != WL_CONNECTED && wifiConnected) {
+    Serial.println("WiFi disconnected. Switching to offline mode.");
+    wifiConnected = false;
+  } else if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
+    Serial.println("WiFi reconnected. Switching to online mode.");
+    wifiConnected = true;
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    uploadStoredData();
+  }
+  
   switch (currentState) {
     case AS7263_PHASE:
-      // AS7263 phase: 2 minutes of data collection
       if (currentTime - phaseStartTime < PHASE_DURATION) {
-        // --- AS7263 Blood Glucose & BP ---
         as7263.startMeasurement();
-        delay(750); // wait for measurement
+        delay(750);
         uint16_t channels[6];
         for (int i = 0; i < 6; i++) {
           channels[i] = as7263.readChannel(i);
@@ -225,11 +536,9 @@ void loop() {
         float sysBP = estimateSystolicBP(channels[0], channels[3], channels[5]);
         float diaBP = estimateDiastolicBP(channels[1], channels[4]);
         
-        // --- TMP117 Temperature ---
         float skinTemp = getAverageTemp();
         float bodyTemp = skinTemp + CALIBRATION_OFFSET;
         
-        // --- BMI270 Motion Data ---
         bmi.getSensorData();
         float ax = bmi.data.accelX;
         float ay = bmi.data.accelY;
@@ -238,7 +547,6 @@ void loop() {
         float gy = bmi.data.gyroY;
         float gz = bmi.data.gyroZ;
         
-        // Store readings for averaging
         if (readingCount < MAX_READINGS) {
           glucoseReadings[readingCount] = glucose;
           sysBPReadings[readingCount] = sysBP;
@@ -254,7 +562,12 @@ void loop() {
           readingCount++;
         }
         
-        // Display current readings
+        String timestamp = getTimestamp();
+        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",," + String(skinTemp) + "," + String(bodyTemp) + "," +
+                            String(ax) + "," + String(ay) + "," + String(az) + "," +
+                            String(gx) + "," + String(gy) + "," + String(gz);
+        logDataToCSV(timestamp, "AS7263", sensorData);
+        
         Serial.print("AS7263 - Time remaining: ");
         Serial.print((PHASE_DURATION - (currentTime - phaseStartTime)) / 1000);
         Serial.println(" seconds");
@@ -282,9 +595,8 @@ void loop() {
         Serial.print(" Z: "); Serial.println(gz, 2);
         Serial.println("---------------------------");
         
-        delay(2000); // Wait 2 seconds between readings
+        delay(2000);
       } else {
-        // 2 minutes have passed - calculate and display averages
         avgGlucose = 0;
         avgSysBP = 0;
         avgDiaBP = 0;
@@ -323,6 +635,12 @@ void loop() {
         avgGyroY /= readingCount;
         avgGyroZ /= readingCount;
         
+        String timestamp = getTimestamp();
+        String avgData = String(avgGlucose) + "," + String(avgSysBP) + "," + String(avgDiaBP) + ",," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
+                         String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
+                         String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
+        logDataToCSV(timestamp, "AS7263_AVG", avgData);
+        
         Serial.println("\n=== AS7263 2-MINUTE READING SUMMARY ===");
         Serial.print("Average Glucose: ");
         Serial.print(avgGlucose);
@@ -347,19 +665,19 @@ void loop() {
         Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
         Serial.println("========================================");
         
-        // Reset for next phase
+        saveDataToFlash();
+        
         resetReadings();
         Serial.println("Now switching to MAX30102 sensor for 2 minutes...");
         Serial.println("Place your finger on the MAX30102 sensor.");
+        Serial.println("Ensure finger is properly placed for accurate heart rate and SpO2 readings.");
         phaseStartTime = millis();
         currentState = MAX30102_PHASE;
       }
       break;
       
     case MAX30102_PHASE:
-      // MAX30102 phase: 2 minutes of data collection
       if (currentTime - phaseStartTime < PHASE_DURATION) {
-        // --- MAX30102 HR + SpO2 ---
         bufferLength = HR_BUFFER_SIZE;
         for (int i = 0; i < bufferLength; i++) {
           while (!particleSensor.available()) {
@@ -368,6 +686,12 @@ void loop() {
           redBuffer[i] = particleSensor.getRed();
           irBuffer[i] = particleSensor.getIR();
           particleSensor.nextSample();
+          
+          // Debug MAX30102 signal quality
+          if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
+            Serial.println("DEBUG: Low signal quality detected on MAX30102.");
+            Serial.println("Ensure finger is firmly placed on the sensor.");
+          }
         }
         
         maxim_heart_rate_and_oxygen_saturation(
@@ -376,11 +700,9 @@ void loop() {
           &spo2, &validSPO2,
           &heartRate, &validHeartRate);
         
-        // --- TMP117 Temperature ---
         float skinTemp = getAverageTemp();
         float bodyTemp = skinTemp + CALIBRATION_OFFSET;
         
-        // --- BMI270 Motion Data ---
         bmi.getSensorData();
         float ax = bmi.data.accelX;
         float ay = bmi.data.accelY;
@@ -389,7 +711,6 @@ void loop() {
         float gy = bmi.data.gyroY;
         float gz = bmi.data.gyroZ;
         
-        // Store readings for averaging
         if (readingCount < MAX_READINGS) {
           if (validHeartRate) hrReadings[readingCount] = heartRate;
           if (validSPO2) spo2Readings[readingCount] = spo2;
@@ -404,7 +725,12 @@ void loop() {
           readingCount++;
         }
         
-        // Display current readings
+        String timestamp = getTimestamp();
+        String sensorData = ",,," + (validHeartRate ? String(heartRate) : "") + "," + (validSPO2 ? String(spo2) : "") + "," + String(skinTemp) + "," + String(bodyTemp) + "," +
+                            String(ax) + "," + String(ay) + "," + String(az) + "," +
+                            String(gx) + "," + String(gy) + "," + String(gz);
+        logDataToCSV(timestamp, "MAX30102", sensorData);
+        
         Serial.print("MAX30102 - Time remaining: ");
         Serial.print((PHASE_DURATION - (currentTime - phaseStartTime)) / 1000);
         Serial.println(" seconds");
@@ -432,9 +758,8 @@ void loop() {
         Serial.print(" Z: "); Serial.println(gz, 2);
         Serial.println("---------------------------");
         
-        delay(1000); // Wait 1 second between readings
+        delay(1000);
       } else {
-        // 2 minutes have passed - calculate and display averages
         avgHR = 0;
         avgSPO2 = 0;
         avgTemp = 0;
@@ -481,6 +806,12 @@ void loop() {
         avgGyroY /= readingCount;
         avgGyroZ /= readingCount;
         
+        String timestamp = getTimestamp();
+        String avgData = ",,," + String(avgHR) + "," + String(avgSPO2) + "," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
+                         String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
+                         String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
+        logDataToCSV(timestamp, "MAX30102_AVG", avgData);
+        
         Serial.println("\n=== MAX30102 2-MINUTE READING SUMMARY ===");
         Serial.print("Average Heart Rate: ");
         Serial.print(avgHR);
@@ -503,20 +834,23 @@ void loop() {
         Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
         Serial.println("==========================================");
         
-        // Move to post data phase
+        saveDataToFlash();
+        
         currentState = POST_DATA_PHASE;
       }
       break;
       
     case POST_DATA_PHASE:
-      // Post all data to server
-      Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
-      postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
-                            avgTemp, avgBodyTemp,
-                            avgAccelX, avgAccelY, avgAccelZ,
-                            avgGyroX, avgGyroY, avgGyroZ);
+      if (wifiConnected) {
+        Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
+        postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
+                              avgTemp, avgBodyTemp,
+                              avgAccelX, avgAccelY, avgAccelZ,
+                              avgGyroX, avgGyroY, avgGyroZ);
+      } else {
+        Serial.println("\nWiFi not connected. Data stored locally.");
+      }
       
-      // Reset for next cycle
       resetReadings();
       Serial.println("Starting new cycle with AS7263 sensor for 2 minutes...");
       Serial.println("Place your finger on the AS7263 sensor.");
@@ -527,7 +861,6 @@ void loop() {
 }
 
 void resetReadings() {
-  // Reset all reading arrays and counters
   readingCount = 0;
   for (int i = 0; i < MAX_READINGS; i++) {
     glucoseReadings[i] = 0;
@@ -550,12 +883,11 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
                            float temperature, float bodyTemperature,
                            float accelX, float accelY, float accelZ,
                            float gyroX, float gyroY, float gyroZ) {
-  // Create JSON object
   JsonDocument doc;
   
   doc["userId"] = "user-001-wearable";
   doc["inputMethod"] = "wearable";
-  doc["timestamp"] = getTimestamp(); // Add timestamp to the JSON
+  doc["timestamp"] = getTimestamp();
   
   JsonObject bloodPressure = doc["bloodPressure"].to<JsonObject>();
   bloodPressure["systolic"] = sysBP;
@@ -565,12 +897,10 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   doc["spO2"] = spO2;
   doc["bloodGlucose"] = glucose;
   
-  // Add temperature data
   JsonObject tempData = doc["temperature"].to<JsonObject>();
   tempData["skin"] = temperature;
   tempData["body"] = bodyTemperature;
   
-  // Add motion data
   JsonObject motion = doc["motion"].to<JsonObject>();
   JsonObject acceleration = motion["acceleration"].to<JsonObject>();
   acceleration["x"] = accelX;
@@ -582,9 +912,46 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   gyroscope["y"] = gyroY;
   gyroscope["z"] = gyroZ;
   
-  // Serialize JSON to string
   String jsonString;
   serializeJson(doc, jsonString);
+  
+  // Debug Step 1: Check for invalid JSON format
+  JsonDocument testDoc;
+  DeserializationError jsonError = deserializeJson(testDoc, jsonString);
+  if (jsonError) {
+    Serial.println("DEBUG: Invalid JSON format detected locally.");
+    Serial.print("JSON Error: ");
+    Serial.println(jsonError.c_str());
+    Serial.print("JSON String: ");
+    Serial.println(jsonString);
+    String timestamp = getTimestamp();
+    String finalData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + "," + 
+                      String(heartRate) + "," + String(spO2) + "," +
+                      String(temperature) + "," + String(bodyTemperature) + "," +
+                      String(accelX) + "," + String(accelY) + "," + String(accelZ) + "," +
+                      String(gyroX) + "," + String(gyroY) + "," + String(gyroZ);
+    logDataToCSV(timestamp, "FINAL_AVG", finalData);
+    saveDataToFlash();
+    return;
+  }
+  
+  // Debug Step 2: Check if data is too large
+  const size_t MAX_PAYLOAD_SIZE = 10240; // 10KB
+  if (jsonString.length() > MAX_PAYLOAD_SIZE) {
+    Serial.println("DEBUG: JSON payload size exceeds threshold.");
+    Serial.print("Payload size: ");
+    Serial.print(jsonString.length());
+    Serial.println(" bytes (Max allowed: " + String(MAX_PAYLOAD_SIZE) + " bytes)");
+    String timestamp = getTimestamp();
+    String finalData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + "," + 
+                      String(heartRate) + "," + String(spO2) + "," +
+                      String(temperature) + "," + String(bodyTemperature) + "," +
+                      String(accelX) + "," + String(accelY) + "," + String(accelZ) + "," +
+                      String(gyroX) + "," + String(gyroY) + "," + String(gyroZ);
+    logDataToCSV(timestamp, "FINAL_AVG", finalData);
+    saveDataToFlash();
+    return;
+  }
   
   // Send HTTP POST request
   if (WiFi.status() == WL_CONNECTED) {
@@ -603,7 +970,39 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
       Serial.println(httpResponseCode);
       Serial.print("Server response: ");
       Serial.println(response);
-      Serial.println("All vital signs posted successfully!");
+      
+      if (httpResponseCode == 500) {
+        Serial.println("SERVER ERROR: The server encountered an internal error.");
+        
+        // Debug Step 3: Check for authentication issues
+        HTTPClient testHttp;
+        testHttp.begin(serverURL);
+        testHttp.addHeader("Content-Type", "application/json");
+        String testPayload = "{\"test\":\"ping\"}";
+        int testResponseCode = testHttp.POST(testPayload);
+        if (testResponseCode == 401 || testResponseCode == 403) {
+          Serial.println("DEBUG: Server authentication required (401/403 detected).");
+          Serial.println("Please verify if the server requires an API key or token.");
+        } else if (testResponseCode == 500) {
+          Serial.println("DEBUG: Test request also returned 500. Likely a server-side bug.");
+          Serial.print("Test request response: ");
+          Serial.println(testHttp.getString());
+        } else {
+          Serial.println("DEBUG: Test request succeeded or returned different error.");
+          Serial.print("Test response code: ");
+          Serial.println(testResponseCode);
+        }
+        testHttp.end();
+        
+        Serial.println("Possible causes not ruled out:");
+        Serial.println("- Invalid JSON format (ruled out by local validation)");
+        Serial.println("- Data too large (ruled out by size check)");
+        Serial.println("- Server authentication required (check test request result)");
+        Serial.println("- Bug in server processing (likely if test request also fails)");
+      } else {
+        Serial.println("All vital signs posted successfully!");
+        uploadCSVToServer();
+      }
     } else {
       Serial.print("Error posting data. Error code: ");
       Serial.println(httpResponseCode);
@@ -612,24 +1011,13 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     http.end();
   } else {
     Serial.println("WiFi disconnected. Cannot post data.");
-    // Try to reconnect
-    WiFi.begin(ssid, password);
-    Serial.print("Attempting to reconnect to WiFi");
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-      delay(500);
-      Serial.print(".");
-      attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nReconnected to WiFi");
-      // Try posting again
-      postVitalsDataToServer(glucose, sysBP, diaBP, heartRate, spO2,
-                            temperature, bodyTemperature,
-                            accelX, accelY, accelZ,
-                            gyroX, gyroY, gyroZ);
-    } else {
-      Serial.println("\nFailed to reconnect to WiFi");
-    }
+    String timestamp = getTimestamp();
+    String finalData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + "," + 
+                      String(heartRate) + "," + String(spO2) + "," +
+                      String(temperature) + "," + String(bodyTemperature) + "," +
+                      String(accelX) + "," + String(accelY) + "," + String(accelZ) + "," +
+                      String(gyroX) + "," + String(gyroY) + "," + String(gyroZ);
+    logDataToCSV(timestamp, "FINAL_AVG", finalData);
+    saveDataToFlash();
   }
 }
