@@ -304,7 +304,7 @@ void uploadCSVToServer() {
   Serial.println(file.size());
   
   // Check file size
-  const size_t MAX_FILE_SIZE = 1000000; // 1MB threshold
+  const size_t MAX_FILE_SIZE = 7000000; // 7MB threshold
   if (file.size() > MAX_FILE_SIZE) {
     Serial.println("DEBUG: CSV file size exceeds threshold.");
     Serial.print("File size: ");
@@ -418,9 +418,6 @@ void uploadCSVToServer() {
   }
   client.stop();
   
-  // Debug: Validate CSV locally (read a sample since full streaming)
-  // For now, skip full validation as file is closed, but assume fixed format
-  
   Serial.print("Full server response body: ");
   Serial.println(response);
   
@@ -461,9 +458,6 @@ void setup() {
   delay(1000);
   
   // Suppress WiFi error logs to reduce spam
-  // esp_log_level_set("wifi", ESP_LOG_WARN);
-
-  
   esp_log_level_set("wifi", ESP_LOG_NONE); 
   
   initializeSPIFFS();
@@ -529,7 +523,6 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && wifiConnected) {
     Serial.println("WiFi disconnected. Switching to offline mode.");
     wifiConnected = false;
-    // Do not call WiFi.disconnect() to allow auto-reconnect attempts internally
   } else if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
     Serial.println("WiFi reconnected. Switching to online mode.");
     wifiConnected = true;
@@ -578,7 +571,7 @@ void loop() {
         }
         
         String timestamp = getTimestamp();
-        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",," + String(skinTemp) + "," + String(bodyTemp) + "," +
+        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",,," + String(skinTemp) + "," + String(bodyTemp) + "," +
                             String(ax) + "," + String(ay) + "," + String(az) + "," +
                             String(gx) + "," + String(gy) + "," + String(gz);
         logDataToCSV(timestamp, "AS7263", sensorData);
@@ -651,11 +644,12 @@ void loop() {
         avgGyroZ /= readingCount;
         
         String timestamp = getTimestamp();
-        String avgData = String(avgGlucose) + "," + String(avgSysBP) + "," + String(avgDiaBP) + ",," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
+        String avgData = String(avgGlucose) + "," + String(avgSysBP) + "," + String(avgDiaBP) + ",,," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
                          String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
                          String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
-        logDataToCSV(timestamp, "AS7263_AVG", avgData);
+        logDataToCSV(timestamp, "Average Blood Pressure and Glucose Readings", avgData);
         
+        // Print summary to Serial
         Serial.println("\n=== AS7263 2-MINUTE READING SUMMARY ===");
         Serial.print("Average Glucose: ");
         Serial.print(avgGlucose);
@@ -680,6 +674,7 @@ void loop() {
         Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
         Serial.println("========================================");
         
+        // Save to flash immediately after logging summary
         saveDataToFlash();
         
         resetReadings();
@@ -694,28 +689,27 @@ void loop() {
     case MAX30102_PHASE:
       if (currentTime - phaseStartTime < PHASE_DURATION) {
         bufferLength = HR_BUFFER_SIZE;
-bool lowSignalShown = false;
-for (int i = 0; i < bufferLength; i++) {
-  while (!particleSensor.available()) {
-    particleSensor.check();
-  }
-  redBuffer[i] = particleSensor.getRed();
-  irBuffer[i] = particleSensor.getIR();
-  particleSensor.nextSample();
-
-  // Debug MAX30102 signal quality
-  if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
-    if (!lowSignalShown) {
-      // Serial.println("DEBUG: Low signal quality detected on MAX30102.");
-      // Serial.println("Ensure finger is firmly placed on the sensor.");
-      lowSignalShown = true;
-    }
-    Serial.println("Heart Rate: INVALID | SpO2: INVALID");
-  } else {
-    lowSignalShown = false; // reset when signal improves
-    // Normal HR & SpO2 printing here (if needed)
-  }
-}
+        bool lowSignalShown = false;
+        for (int i = 0; i < bufferLength; i++) {
+          while (!particleSensor.available()) {
+            particleSensor.check();
+          }
+          redBuffer[i] = particleSensor.getRed();
+          irBuffer[i] = particleSensor.getIR();
+          particleSensor.nextSample();
+          
+          // Debug MAX30102 signal quality
+          if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
+            if (!lowSignalShown) {
+              // Serial.println("DEBUG: Low signal quality detected on MAX30102.");
+              // Serial.println("Ensure finger is properly placed on the sensor.");
+              lowSignalShown = true;
+            }
+            Serial.println("Heart Rate: INVALID | SpO2: INVALID");
+          } else {
+            lowSignalShown = false; // reset when signal improves
+          }
+        }
         
         maxim_heart_rate_and_oxygen_saturation(
           irBuffer, bufferLength,
@@ -833,8 +827,9 @@ for (int i = 0; i < bufferLength; i++) {
         String avgData = ",,," + String(avgHR) + "," + String(avgSPO2) + "," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
                          String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
                          String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
-        logDataToCSV(timestamp, "MAX30102_AVG", avgData);
+        logDataToCSV(timestamp, "Remaining Average Readings", avgData);
         
+        // Print summary to Serial
         Serial.println("\n=== MAX30102 2-MINUTE READING SUMMARY ===");
         Serial.print("Average Heart Rate: ");
         Serial.print(avgHR);
@@ -857,6 +852,7 @@ for (int i = 0; i < bufferLength; i++) {
         Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
         Serial.println("==========================================");
         
+        // Save to flash immediately after logging summary
         saveDataToFlash();
         
         currentState = POST_DATA_PHASE;
