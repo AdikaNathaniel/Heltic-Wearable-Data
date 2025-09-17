@@ -281,7 +281,7 @@ bool validateCSV(String csvContent) {
       fieldIndex++;
     }
     fields[fieldIndex] = line.substring(start);
-    if (fields[1] != "AS7263" && fields[1] != "MAX30102" && fields[1] != "AS7263_AVG" && fields[1] != "MAX30102_AVG" && fields[1] != "FINAL_AVG") {
+    if (fields[1] != "AS7263" && fields[1] != "MAX30102" && fields[1] != "Average Blood Pressure and Glucose Readings" && fields[1] != "Remaining Average Readings" && fields[1] != "FINAL_AVG") {
       Serial.print("Invalid sensorType in CSV: ");
       Serial.println(fields[1]);
       return false;
@@ -705,7 +705,7 @@ void loop() {
               // Serial.println("Ensure finger is properly placed on the sensor.");
               lowSignalShown = true;
             }
-            Serial.println("Heart Rate: INVALID | SpO2: INVALID");
+            // Serial.println("Heart Rate: INVALID | SpO2: INVALID");
           } else {
             lowSignalShown = false; // reset when signal improves
           }
