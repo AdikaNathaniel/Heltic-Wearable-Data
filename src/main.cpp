@@ -461,7 +461,10 @@ void setup() {
   delay(1000);
   
   // Suppress WiFi error logs to reduce spam
-  esp_log_level_set("wifi", ESP_LOG_WARN);
+  // esp_log_level_set("wifi", ESP_LOG_WARN);
+
+  
+  esp_log_level_set("wifi", ESP_LOG_NONE); 
   
   initializeSPIFFS();
   
