@@ -12,6 +12,7 @@
 #include <time.h>
 #include <WiFiClient.h>
 #include <algorithm>
+#include <esp_log.h>
 
 // Sensor objects
 MAX30105 particleSensor;
@@ -87,6 +88,7 @@ float avgGyroZ = 0;
 
 // Data logging variables
 bool wifiConnected = false;
+bool pendingUpload = false;
 String csvData = "";
 unsigned long lastDataLogTime = 0;
 const unsigned long DATA_LOG_INTERVAL = 1000; // Log data every second
@@ -458,6 +460,13 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
+
+  // Suppress all WiFi logs (set to NONE)
+  esp_log_level_set("wifi", ESP_LOG_NONE);
+
+  // Suppress WiFi error logs to reduce spam
+  // esp_log_level_set("wifi", ESP_LOG_WARN);
+  
   initializeSPIFFS();
   
   Wire.begin(41, 42);
@@ -521,11 +530,12 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && wifiConnected) {
     Serial.println("WiFi disconnected. Switching to offline mode.");
     wifiConnected = false;
+    // Do not call WiFi.disconnect() to allow auto-reconnect attempts internally
   } else if (WiFi.status() == WL_CONNECTED && !wifiConnected) {
     Serial.println("WiFi reconnected. Switching to online mode.");
     wifiConnected = true;
+    pendingUpload = true;
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    uploadStoredData();
   }
   
   switch (currentState) {
@@ -569,7 +579,7 @@ void loop() {
         }
         
         String timestamp = getTimestamp();
-        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",,," + String(skinTemp) + "," + String(bodyTemp) + "," +
+        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",," + String(skinTemp) + "," + String(bodyTemp) + "," +
                             String(ax) + "," + String(ay) + "," + String(az) + "," +
                             String(gx) + "," + String(gy) + "," + String(gz);
         logDataToCSV(timestamp, "AS7263", sensorData);
@@ -642,7 +652,7 @@ void loop() {
         avgGyroZ /= readingCount;
         
         String timestamp = getTimestamp();
-        String avgData = String(avgGlucose) + "," + String(avgSysBP) + "," + String(avgDiaBP) + ",,," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
+        String avgData = String(avgGlucose) + "," + String(avgSysBP) + "," + String(avgDiaBP) + ",," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
                          String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
                          String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
         logDataToCSV(timestamp, "AS7263_AVG", avgData);
@@ -849,12 +859,18 @@ void loop() {
     case POST_DATA_PHASE:
       if (wifiConnected) {
         Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
-        postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
-                              avgTemp, avgBodyTemp,
-                              avgAccelX, avgAccelY, avgAccelZ,
-                              avgGyroX, avgGyroY, avgGyroZ);
       } else {
         Serial.println("\nWiFi not connected. Data stored locally.");
+      }
+      postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
+                            avgTemp, avgBodyTemp,
+                            avgAccelX, avgAccelY, avgAccelZ,
+                            avgGyroX, avgGyroY, avgGyroZ);
+      
+      // If pending upload (reconnected during cycle), upload stored data now
+      if (pendingUpload && wifiConnected) {
+        uploadStoredData();
+        pendingUpload = false;
       }
       
       resetReadings();
