@@ -460,12 +460,8 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-
-  // Suppress all WiFi logs (set to NONE)
-  esp_log_level_set("wifi", ESP_LOG_NONE);
-
   // Suppress WiFi error logs to reduce spam
-  // esp_log_level_set("wifi", ESP_LOG_WARN);
+  esp_log_level_set("wifi", ESP_LOG_WARN);
   
   initializeSPIFFS();
   
@@ -695,20 +691,28 @@ void loop() {
     case MAX30102_PHASE:
       if (currentTime - phaseStartTime < PHASE_DURATION) {
         bufferLength = HR_BUFFER_SIZE;
-        for (int i = 0; i < bufferLength; i++) {
-          while (!particleSensor.available()) {
-            particleSensor.check();
-          }
-          redBuffer[i] = particleSensor.getRed();
-          irBuffer[i] = particleSensor.getIR();
-          particleSensor.nextSample();
-          
-          // Debug MAX30102 signal quality
-          if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
-            Serial.println("DEBUG: Low signal quality detected on MAX30102.");
-            Serial.println("Ensure finger is firmly placed on the sensor.");
-          }
-        }
+bool lowSignalShown = false;
+for (int i = 0; i < bufferLength; i++) {
+  while (!particleSensor.available()) {
+    particleSensor.check();
+  }
+  redBuffer[i] = particleSensor.getRed();
+  irBuffer[i] = particleSensor.getIR();
+  particleSensor.nextSample();
+
+  // Debug MAX30102 signal quality
+  if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
+    if (!lowSignalShown) {
+      // Serial.println("DEBUG: Low signal quality detected on MAX30102.");
+      // Serial.println("Ensure finger is firmly placed on the sensor.");
+      lowSignalShown = true;
+    }
+    Serial.println("Heart Rate: INVALID | SpO2: INVALID");
+  } else {
+    lowSignalShown = false; // reset when signal improves
+    // Normal HR & SpO2 printing here (if needed)
+  }
+}
         
         maxim_heart_rate_and_oxygen_saturation(
           irBuffer, bufferLength,
