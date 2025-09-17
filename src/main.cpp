@@ -29,7 +29,7 @@ const char* ssid = "Network";
 const char* password = "jehovahofmercy#love";
 
 // API endpoints
-const char* serverURL = "http://192.168.43.64:3100/api/v1/vitals-health-data";
+const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
 const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
 
 // MAX30102 settings
@@ -910,32 +910,19 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
                            float gyroX, float gyroY, float gyroZ) {
   JsonDocument doc;
   
-  doc["userId"] = "user-001-wearable";
-  doc["inputMethod"] = "wearable";
-  doc["timestamp"] = getTimestamp();
-  
-  JsonObject bloodPressure = doc["bloodPressure"].to<JsonObject>();
-  bloodPressure["systolic"] = sysBP;
-  bloodPressure["diastolic"] = diaBP;
-  
+  doc["glucose"] = glucose;
+  doc["systolicBP"] = sysBP;
+  doc["diastolicBP"] = diaBP;
   doc["heartRate"] = heartRate;
-  doc["spO2"] = spO2;
-  doc["bloodGlucose"] = glucose;
-  
-  JsonObject tempData = doc["temperature"].to<JsonObject>();
-  tempData["skin"] = temperature;
-  tempData["body"] = bodyTemperature;
-  
-  JsonObject motion = doc["motion"].to<JsonObject>();
-  JsonObject acceleration = motion["acceleration"].to<JsonObject>();
-  acceleration["x"] = accelX;
-  acceleration["y"] = accelY;
-  acceleration["z"] = accelZ;
-  
-  JsonObject gyroscope = motion["gyroscope"].to<JsonObject>();
-  gyroscope["x"] = gyroX;
-  gyroscope["y"] = gyroY;
-  gyroscope["z"] = gyroZ;
+  doc["spo2"] = spO2;
+  doc["skinTemp"] = temperature;
+  doc["bodyTemp"] = bodyTemperature;
+  doc["accelX"] = accelX;
+  doc["accelY"] = accelY;
+  doc["accelZ"] = accelZ;
+  doc["gyroX"] = gyroX;
+  doc["gyroY"] = gyroY;
+  doc["gyroZ"] = gyroZ;
   
   String jsonString;
   serializeJson(doc, jsonString);
@@ -996,7 +983,11 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
       Serial.print("Server response: ");
       Serial.println(response);
       
-      if (httpResponseCode == 500) {
+      if (httpResponseCode == 201) {
+        Serial.println("Post successful!");
+        Serial.println("All vital signs posted successfully!");
+        uploadCSVToServer();
+      } else if (httpResponseCode == 500) {
         Serial.println("SERVER ERROR: The server encountered an internal error.");
         
         // Debug Step 3: Check for authentication issues
@@ -1025,8 +1016,7 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
         Serial.println("- Server authentication required (check test request result)");
         Serial.println("- Bug in server processing (likely if test request also fails)");
       } else {
-        Serial.println("All vital signs posted successfully!");
-        uploadCSVToServer();
+        Serial.println("Unexpected response code.");
       }
     } else {
       Serial.print("Error posting data. Error code: ");
