@@ -13,6 +13,74 @@
 #include <WiFiClient.h>
 #include <algorithm>
 #include <esp_log.h>
+#include "mbedtls/aes.h"
+#include "mbedtls/base64.h"
+
+
+
+// 16-byte key (AES-128)
+byte aesKey[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                   0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+
+// 16-byte initialization vector (IV)
+byte aesIV[16]  = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+                   0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
+
+
+String aesEncryptBase64(String plainText, const char* key, const char* iv) {
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+
+  size_t inputLen = plainText.length();
+  size_t paddedLen = ((inputLen / 16) + 1) * 16; // AES block size padding
+  byte input[paddedLen];
+  memset(input, 0, paddedLen);
+  memcpy(input, plainText.c_str(), inputLen);
+
+  byte output[paddedLen];
+  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)key, 128); // AES-128
+  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, (unsigned char*)iv, input, output);
+
+  // Convert to Base64
+  size_t base64Len = 0;
+  mbedtls_base64_encode(NULL, 0, &base64Len, output, paddedLen);
+  byte base64Buf[base64Len + 1];
+  mbedtls_base64_encode(base64Buf, base64Len, &base64Len, output, paddedLen);
+  base64Buf[base64Len] = '\0';
+
+  mbedtls_aes_free(&aes);
+  return String((char*)base64Buf);
+}
+
+
+
+
+String aesDecryptBase64(String cipherBase64, const char* key, const char* iv) {
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+
+  // Decode Base64
+  size_t cipherLen = 0;
+  byte cipher[cipherBase64.length()];
+  mbedtls_base64_decode(cipher, sizeof(cipher), &cipherLen, (const unsigned char*)cipherBase64.c_str(), cipherBase64.length());
+
+  byte output[cipherLen];
+  mbedtls_aes_setkey_dec(&aes, (const unsigned char*)key, 128);
+  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, cipherLen, (unsigned char*)iv, cipher, output);
+
+  mbedtls_aes_free(&aes);
+
+  // Remove padding zeros
+  String result = "";
+  for (size_t i = 0; i < cipherLen; i++) {
+    if (output[i] == 0) break;
+    result += (char)output[i];
+  }
+  return result;
+}
+
+
+
 
 // Sensor objects
 MAX30105 particleSensor;
@@ -860,15 +928,44 @@ void loop() {
       break;
       
     case POST_DATA_PHASE:
-      if (wifiConnected) {
-        Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
-      } else {
-        Serial.println("\nWiFi not connected. Data stored locally.");
-      }
-      postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
-                            avgTemp, avgBodyTemp,
-                            avgAccelX, avgAccelY, avgAccelZ,
-                            avgGyroX, avgGyroY, avgGyroZ);
+if (wifiConnected) {
+  Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
+
+  // Prepare JSON string for encryption
+  JsonDocument doc;
+  doc["glucose"] = avgGlucose;
+  doc["systolicBP"] = avgSysBP;
+  doc["diastolicBP"] = avgDiaBP;
+  doc["heartRate"] = avgHR;
+  doc["spo2"] = avgSPO2;
+  doc["skinTemp"] = avgTemp;
+  doc["bodyTemp"] = avgBodyTemp;
+  doc["accelX"] = avgAccelX;
+  doc["accelY"] = avgAccelY;
+  doc["accelZ"] = avgAccelZ;
+  doc["gyroX"] = avgGyroX;
+  doc["gyroY"] = avgGyroY;
+  doc["gyroZ"] = avgGyroZ;
+  String jsonString;
+  serializeJson(doc, jsonString);
+
+   // --- AES encrypt JSON payload and show in Serial ---
+  String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
+  Serial.println("=== AES Encrypted Data (Base64) ===");
+  Serial.println(cipherTextBase64);
+  Serial.println("===================================");
+
+  // Decrypt to verify
+  String decryptedText = aesDecryptBase64(cipherTextBase64, (const char*)aesKey, (const char*)aesIV);
+  Serial.println("=== Decrypted Text (Verify) ===");
+  Serial.println(decryptedText);
+} else {
+  Serial.println("\nWiFi not connected. Data stored locally.");
+}
+postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
+                      avgTemp, avgBodyTemp,
+                      avgAccelX, avgAccelY, avgAccelZ,
+                      avgGyroX, avgGyroY, avgGyroZ);
       
       // If pending upload (reconnected during cycle), upload stored data now
       if (pendingUpload && wifiConnected) {
@@ -983,12 +1080,36 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
       Serial.print("Server response: ");
       Serial.println(response);
       
+
       if (httpResponseCode == 201) {
-        Serial.println("Post successful!");
-        Serial.println("All vital signs posted successfully!");
-        uploadCSVToServer();
-      } else if (httpResponseCode == 500) {
-        Serial.println("SERVER ERROR: The server encountered an internal error.");
+    Serial.println("Post successful!");
+    Serial.println("All vital signs posted successfully!");
+    uploadCSVToServer();
+
+    // --- AES encrypt JSON payload and show in Serial ---
+    String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
+    Serial.println("=== AES Encrypted Data (Base64) ===");
+    Serial.println(cipherTextBase64);
+    Serial.println("===================================");
+}else if (httpResponseCode == 500) {
+    Serial.println("SERVER ERROR: The server encountered an internal error.");
+
+    // --- AES encrypt JSON payload and show in Serial ---
+    String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
+
+    // Decrypt to verify
+    String decryptedText = aesDecryptBase64(cipherTextBase64, (const char*)aesKey, (const char*)aesIV);
+    Serial.println("=== Decrypted Text (Verify) ===");
+    Serial.println(decryptedText);
+
+
+
+      // if (httpResponseCode == 201) {
+      //   Serial.println("Post successful!");
+      //   Serial.println("All vital signs posted successfully!");
+      //   uploadCSVToServer();
+      // } else if (httpResponseCode == 500) {
+        // Serial.println("SERVER ERROR: The server encountered an internal error.");
         
         // Debug Step 3: Check for authentication issues
         HTTPClient testHttp;
