@@ -19,66 +19,140 @@
 
 
 
-// 16-byte key (AES-128)
+
+// Keep your hardcoded key and IV as global variables
 byte aesKey[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
                    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
 
-// 16-byte initialization vector (IV)
 byte aesIV[16]  = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
                    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
 
-
 String aesEncryptBase64(String plainText, const char* key, const char* iv) {
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
 
-  size_t inputLen = plainText.length();
-  size_t paddedLen = ((inputLen / 16) + 1) * 16; // AES block size padding
-  byte input[paddedLen];
-  memset(input, 0, paddedLen);
-  memcpy(input, plainText.c_str(), inputLen);
+    size_t inputLen = plainText.length();
+    size_t paddedLen = ((inputLen + 15) / 16) * 16;
+    
+    unsigned char input[paddedLen];
+    unsigned char output[paddedLen];
+    unsigned char ivCopy[16];  // Create a copy of the IV
+    
+    memset(input, 0, paddedLen);
+    memcpy(input, plainText.c_str(), inputLen);
+    memcpy(ivCopy, iv, 16);  // Copy IV to protect the original
 
-  byte output[paddedLen];
-  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)key, 128); // AES-128
-  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, (unsigned char*)iv, input, output);
+    // Add proper PKCS#7 padding instead of just zeros
+    unsigned char paddingValue = paddedLen - inputLen;
+    for (size_t i = inputLen; i < paddedLen; i++) {
+        input[i] = paddingValue;
+    }
 
-  // Convert to Base64
-  size_t base64Len = 0;
-  mbedtls_base64_encode(NULL, 0, &base64Len, output, paddedLen);
-  byte base64Buf[base64Len + 1];
-  mbedtls_base64_encode(base64Buf, base64Len, &base64Len, output, paddedLen);
-  base64Buf[base64Len] = '\0';
+    // Set encryption key
+    if (mbedtls_aes_setkey_enc(&aes, (const unsigned char*)key, 128) != 0) {
+        Serial.println("AES setkey failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
 
-  mbedtls_aes_free(&aes);
-  return String((char*)base64Buf);
+    // Encrypt using the IV copy (this gets modified during encryption)
+    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, 
+                             ivCopy, input, output) != 0) {
+        Serial.println("AES encryption failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
+
+    // Base64 encode
+    size_t base64Len;
+    mbedtls_base64_encode(NULL, 0, &base64Len, output, paddedLen);
+    
+    char base64Buf[base64Len + 1];
+    if (mbedtls_base64_encode((unsigned char*)base64Buf, base64Len, &base64Len, 
+                             output, paddedLen) != 0) {
+        Serial.println("Base64 encode failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
+    
+    base64Buf[base64Len] = '\0';
+    String result = String(base64Buf);
+
+    mbedtls_aes_free(&aes);
+    return result;
 }
-
-
-
 
 String aesDecryptBase64(String cipherBase64, const char* key, const char* iv) {
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
 
-  // Decode Base64
-  size_t cipherLen = 0;
-  byte cipher[cipherBase64.length()];
-  mbedtls_base64_decode(cipher, sizeof(cipher), &cipherLen, (const unsigned char*)cipherBase64.c_str(), cipherBase64.length());
+    // Decode Base64 with proper buffer size calculation
+    size_t cipherLen = 0;
+    size_t bufferSize = (cipherBase64.length() * 3) / 4 + 4;
+    unsigned char cipher[bufferSize];
+    unsigned char ivCopy[16];  // Create a copy of the IV
+    
+    memcpy(ivCopy, iv, 16);  // Copy IV to protect the original
+    
+    if (mbedtls_base64_decode(cipher, bufferSize, &cipherLen, 
+                             (const unsigned char*)cipherBase64.c_str(), 
+                             cipherBase64.length()) != 0) {
+        Serial.println("Base64 decode failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
 
-  byte output[cipherLen];
-  mbedtls_aes_setkey_dec(&aes, (const unsigned char*)key, 128);
-  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, cipherLen, (unsigned char*)iv, cipher, output);
+    unsigned char output[cipherLen];
+    
+    if (mbedtls_aes_setkey_dec(&aes, (const unsigned char*)key, 128) != 0) {
+        Serial.println("AES setkey_dec failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
+    
+    if (mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, cipherLen, 
+                             ivCopy, cipher, output) != 0) {
+        Serial.println("AES decryption failed");
+        mbedtls_aes_free(&aes);
+        return "";
+    }
 
-  mbedtls_aes_free(&aes);
+    mbedtls_aes_free(&aes);
 
-  // Remove padding zeros
-  String result = "";
-  for (size_t i = 0; i < cipherLen; i++) {
-    if (output[i] == 0) break;
-    result += (char)output[i];
-  }
-  return result;
+    // Remove PKCS#7 padding properly
+    if (cipherLen > 0) {
+        unsigned char paddingValue = output[cipherLen - 1];
+        if (paddingValue > 0 && paddingValue <= 16) {
+            // Verify all padding bytes are correct
+            bool validPadding = true;
+            for (size_t i = cipherLen - paddingValue; i < cipherLen; i++) {
+                if (output[i] != paddingValue) {
+                    validPadding = false;
+                    break;
+                }
+            }
+            if (validPadding) {
+                cipherLen -= paddingValue;
+            }
+        }
+    }
+
+    // Convert to string
+    String result = "";
+    for (size_t i = 0; i < cipherLen; i++) {
+        result += (char)output[i];
+    }
+    return result;
 }
+
+
+
+
+
+
+
+
+
 
 
 
@@ -194,6 +268,32 @@ zXwQRxaQ0Wc5dCGLEvU+l6c=
 
 
 
+// void connectMQTT() {
+//   if (mqtt.connected()) return;
+
+//   net.setCACert(AWS_CERT_CA);
+//   net.setCertificate(AWS_CERT_CRT);
+//   net.setPrivateKey(AWS_CERT_PRIVATE);
+//   mqtt.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+
+//   Serial.print("Connecting to AWS IoT MQTT...");
+//   unsigned long start = millis();
+//   while (!mqtt.connected()) {
+//     if (mqtt.connect(MQTT_CLIENT_ID)) {
+//       Serial.println("connected to AWS IoT!");
+//       return;
+//     } else {
+//       Serial.print(".");
+//       delay(1000);
+//     }
+//     if (millis() - start > 20000) {
+//       Serial.println("\nMQTT connect failed, rebooting");
+//       ESP.restart();
+//     }
+//   }
+// }
+
+
 void connectMQTT() {
   if (mqtt.connected()) return;
 
@@ -201,17 +301,25 @@ void connectMQTT() {
   net.setCertificate(AWS_CERT_CRT);
   net.setPrivateKey(AWS_CERT_PRIVATE);
   mqtt.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
-
+  
+  // Set keep alive time (60 seconds is standard)
+  mqtt.setKeepAlive(60);
+  
   Serial.print("Connecting to AWS IoT MQTT...");
   unsigned long start = millis();
+  
   while (!mqtt.connected()) {
     if (mqtt.connect(MQTT_CLIENT_ID)) {
       Serial.println("connected to AWS IoT!");
       return;
     } else {
       Serial.print(".");
+      Serial.print("Failed, rc=");
+      Serial.print(mqtt.state());
+      Serial.println(" retrying in 1 second...");
       delay(1000);
     }
+    
     if (millis() - start > 20000) {
       Serial.println("\nMQTT connect failed, rebooting");
       ESP.restart();
@@ -222,8 +330,131 @@ void connectMQTT() {
 
 
 
+void debugMQTTConnection() {
+    Serial.println("=== MQTT Connection Debug ===");
+    
+    // Check certificate loading
+    Serial.print("CA Cert loaded: ");
+    Serial.println("Set (cannot verify with getCACert)");
+    
+    Serial.print("Client Cert loaded: ");
+    Serial.println("Set (cannot verify with getCertificate)");
+    
+    Serial.print("Private Key loaded: ");
+    Serial.println("Set (cannot verify with getPrivateKey)");
+    
+    // Test different scenarios
+    Serial.println("Testing different publish scenarios:");
+    
+    // Test 1: Simple short message
+    Serial.print("Test 1 - Short message: ");
+    bool success1 = mqtt.publish(MQTT_TOPIC, "test");
+    Serial.println(success1 ? "SUCCESS" : "FAILED");
+    delay(100);
+    
+    // Test 2: Simple JSON
+    Serial.print("Test 2 - Simple JSON: ");
+    bool success2 = mqtt.publish(MQTT_TOPIC, "{\"test\":\"data\"}");
+    Serial.println(success2 ? "SUCCESS" : "FAILED");
+    delay(100);
+    
+    // Test 3: Check if QoS makes a difference
+    Serial.print("Test 3 - With QoS 0: ");
+    bool success3 = mqtt.publish(MQTT_TOPIC, "qos_test", false);
+    Serial.println(success3 ? "SUCCESS" : "FAILED");
+    delay(100);
+    
+    Serial.println("=== Debug Complete ===");
+}
+
+
+// void publishEncryptedData(String encryptedData) {
+//     if (!mqtt.connected()) connectMQTT();
+
+//     bool success = mqtt.publish(MQTT_TOPIC, encryptedData.c_str());
+//     if (success) {
+//         Serial.println("Data published successfully!");
+//     } else {
+//         Serial.println("Failed to publish data.");
+//     }
+// }
+
+
+void publishEncryptedData(String encryptedData) {
+    // Ensure we're connected
+    if (!mqtt.connected()) {
+        Serial.println("Not connected, attempting to connect...");
+        connectMQTT();
+        debugMQTTConnection();
+        delay(100);
+    }
+
+    Serial.print("MQTT state before publish: ");
+    Serial.println(mqtt.state());
+    Serial.print("Connected status: ");
+    Serial.println(mqtt.connected() ? "YES" : "NO");
+
+    // Let MQTT process any background tasks
+    mqtt.loop();
+    delay(10);
+
+    Serial.print("Publishing to topic: ");
+    Serial.println(MQTT_TOPIC);
+    Serial.print("Payload length: ");
+    Serial.println(encryptedData.length());
+    Serial.print("Payload preview: ");
+    if (encryptedData.length() > 50) {
+        Serial.println(encryptedData.substring(0, 50) + "...");
+    } else {
+        Serial.println(encryptedData);
+    }
+
+    bool success = mqtt.publish(MQTT_TOPIC, encryptedData.c_str());
+    
+    Serial.print("Publish result: ");
+    Serial.println(success ? "SUCCESS" : "FAILED");
+    Serial.print("MQTT state after publish: ");
+    Serial.println(mqtt.state());
+    
+    if (!success) {
+        // Try with a smaller test message to rule out payload issues
+        Serial.println("Trying with test message...");
+        bool testSuccess = mqtt.publish(MQTT_TOPIC, "test_message");
+        Serial.print("Test message result: ");
+        Serial.println(testSuccess ? "SUCCESS" : "FAILED");
+    }
+    
+
+     // Check payload size
+    if (encryptedData.length() > 512) { // AWS IoT limit is 128KB but be conservative
+        Serial.println("Payload too large, truncating or splitting needed");
+        // Option: Split into multiple messages or compress
+        encryptedData = encryptedData.substring(0, 512);
+    }
+    // Process MQTT tasks after publishing
+    mqtt.loop();
+}
+
+
+/* Removed stray code block that was outside any function and caused a compile error. */
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.print("Message received on topic: ");
+    Serial.println(topic);
+    
+    Serial.print("Payload: ");
+    for (int i = 0; i < length; i++) {
+        Serial.print((char)payload[i]);
+    }
+    Serial.println();
+}
+
+
 
 // API endpoints
+extern const char* serverURL;
+extern const char* csvUploadURL;
+
 const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
 const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
 
@@ -648,6 +879,8 @@ void uploadStoredData() {
   }
 }
 
+void mqttCallback(char* topic, byte* payload, unsigned int length); // Forward declaration
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -680,7 +913,13 @@ void setup() {
     wifiConnected = false;
   }
 
-  connectMQTT();
+  mqtt.setCallback(mqttCallback);
+
+  if (!mqtt.connected()) {
+    connectMQTT();
+  }
+  mqtt.loop();
+  
   
   Serial.println("Initializing MAX30102...");
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
@@ -1062,21 +1301,37 @@ void loop() {
 if (wifiConnected) {
   Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
 
+
+  // In your POST_DATA_PHASE case, add this test:
+// String testJson = "{\"glucose\":581.49,\"test\":\"data\"}";
+// bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
+// Serial.print("Unencrypted JSON test: ");
+// Serial.println(testSuccess ? "SUCCESS" : "FAILED");
+
+
+// Replace your complex JSON with:
+String testJson = "{\"g\":581,\"s\":269,\"d\":77}";
+String encrypted = aesEncryptBase64(testJson, (const char*)aesKey, (const char*)aesIV);
+bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
+Serial.print("Unencrypted JSON test: ");
+Serial.println(testSuccess ? "SUCCESS" : "FAILED");
+publishEncryptedData(encrypted);
+
   // Prepare JSON string for encryption
   JsonDocument doc;
-  doc["glucose"] = avgGlucose;
-  doc["systolicBP"] = avgSysBP;
-  doc["diastolicBP"] = avgDiaBP;
-  doc["heartRate"] = avgHR;
-  doc["spo2"] = avgSPO2;
-  doc["skinTemp"] = avgTemp;
-  doc["bodyTemp"] = avgBodyTemp;
-  doc["accelX"] = avgAccelX;
-  doc["accelY"] = avgAccelY;
-  doc["accelZ"] = avgAccelZ;
-  doc["gyroX"] = avgGyroX;
-  doc["gyroY"] = avgGyroY;
-  doc["gyroZ"] = avgGyroZ;
+  doc["g"] = avgGlucose;
+  doc["s"] = avgSysBP;
+  doc["d"] = avgDiaBP;
+  doc["h"] = avgHR;
+  doc["sp"] = avgSPO2;
+  doc["sk"] = avgTemp;
+  doc["b"] = avgBodyTemp;
+  doc["aclX"] = avgAccelX;
+  doc["aclY"] = avgAccelY;
+  doc["aclZ"] = avgAccelZ;
+  doc["gyX"] = avgGyroX;
+  doc["gyY"] = avgGyroY;
+  doc["gyZ"] = avgGyroZ;
   String jsonString;
   serializeJson(doc, jsonString);
 
@@ -1085,6 +1340,9 @@ if (wifiConnected) {
   Serial.println("=== AES Encrypted Data (Base64) ===");
   Serial.println(cipherTextBase64);
   Serial.println("===================================");
+
+  publishEncryptedData(cipherTextBase64);
+
 
   // Decrypt to verify
   String decryptedText = aesDecryptBase64(cipherTextBase64, (const char*)aesKey, (const char*)aesIV);
@@ -1137,21 +1395,21 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
                            float accelX, float accelY, float accelZ,
                            float gyroX, float gyroY, float gyroZ) {
   JsonDocument doc;
-  
-  doc["glucose"] = glucose;
-  doc["systolicBP"] = sysBP;
-  doc["diastolicBP"] = diaBP;
-  doc["heartRate"] = heartRate;
-  doc["spo2"] = spO2;
-  doc["skinTemp"] = temperature;
-  doc["bodyTemp"] = bodyTemperature;
-  doc["accelX"] = accelX;
-  doc["accelY"] = accelY;
-  doc["accelZ"] = accelZ;
-  doc["gyroX"] = gyroX;
-  doc["gyroY"] = gyroY;
-  doc["gyroZ"] = gyroZ;
-  
+
+  doc["g"] = glucose;
+  doc["s"] = sysBP;
+  doc["d"] = diaBP;
+  doc["h"] = heartRate;
+  doc["sp"] = spO2;
+  doc["sk"] = temperature;
+  doc["b"] = bodyTemperature;
+  doc["aclX"] = accelX;
+  doc["aclY"] = accelY;
+  doc["aclZ"] = accelZ;
+  doc["gyX"] = gyroX;
+  doc["gyY"] = gyroY;
+  doc["gyZ"] = gyroZ;
+
   String jsonString;
   serializeJson(doc, jsonString);
   
