@@ -1546,3 +1546,6 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     saveDataToFlash();
   }
 }
+
+
+// This is the most workable version for data storage on S3 buckets on AWS
