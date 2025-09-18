@@ -15,6 +15,7 @@
 #include <esp_log.h>
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
+#include <PubSubClient.h>
 
 
 
@@ -95,6 +96,132 @@ BMI270 bmi;
 // WiFi credentials
 const char* ssid = "Network";
 const char* password = "jehovahofmercy#love";
+
+
+
+const char* AWS_IOT_ENDPOINT = "a2gwymvb8cnbld-ats.iot.eu-north-1.amazonaws.com";
+
+// MQTT
+const int AWS_IOT_PORT = 8883;
+const char* MQTT_CLIENT_ID = "heltec-esp32-01"; // unique per device
+const char* MQTT_TOPIC = "heltec/data";
+
+
+WiFiClientSecure net;
+PubSubClient mqtt(net);
+
+
+
+// Amazon Root CA 1 PEM
+const char AWS_CERT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+)EOF";
+
+// Device certificate PEM
+const char AWS_CERT_CRT[] PROGMEM = R"KEY(
+-----BEGIN CERTIFICATE-----
+MIIDWTCCAkGgAwIBAgIUfpb53dBrBLYGeWOaMkTWt1YNlxkwDQYJKoZIhvcNAQEL
+BQAwTTFLMEkGA1UECwxCQW1hem9uIFdlYiBTZXJ2aWNlcyBPPUFtYXpvbi5jb20g
+SW5jLiBMPVNlYXR0bGUgU1Q9V2FzaGluZ3RvbiBDPVVTMB4XDTI1MDkxNTE1MTIw
+NloXDTQ5MTIzMTIzNTk1OVowHjEcMBoGA1UEAwwTQVdTIElvVCBDZXJ0aWZpY2F0
+ZTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMqnA9iZZDck5KeKd4vY
+EJ/USXGRd2ej7MHTOQph+h1J40qIMIm3ExNfEYACDc4RvWdZNRHzO79U2jk6KZDz
+TrVQj48h/TzBj/a4TBC8hX6Jje31FFlMsx1ZddQ1V7UsCADkAoKyp1xbZMnURMLd
+6qmIAs1SrISzX1181AvT8E1tTj0fEvv1Ydb9Cb/hNNAIg+QTUzvY7l3ewgkjF5Un
+4+n/niBnK6WEE8zF8r6eEsW0vYdcjwF3pUvvQpUWvTz/x4m/wZ9HqSzcTI4LZADm
+iGdY6JcM7G7yRrScIYNobPRMOjLH4u1HfZ9ARHqzbN9MtoVdtVyp7EXJKMj4WJp6
+WN0CAwEAAaNgMF4wHwYDVR0jBBgwFoAUnPW8RfR3ybd6tcPGuNTeMJr4ZOYwHQYD
+VR0OBBYEFH7W1y/q3EqKhqsxXSbuSQvDBCPQMAwGA1UdEwEB/wQCMAAwDgYDVR0P
+AQH/BAQDAgeAMA0GCSqGSIb3DQEBCwUAA4IBAQAiZ6uvonjezCL6M5AsDOg5aYd7
+o0fYpMSS02OTFGPI+8YX/GG4UbXggonzGGeeNN0NltKMEYxRIe5TGxHOdydtSkUW
+qMZ46jcKPJLhAu8lqyM8kapk/jg3/epaX8mPb+nZVDY9e9rnJso/LfenlJHvpIoR
+9qVUXGZkbK1Gn3e1+X1LMmhBTaB5JEVCMrOwlSsCFdNcLVn8O1l+ohvnRP6t1MOo
+cWhtdZB9ELQPumDLO+G9Q0gy35d1KwGWKEYZYqG+C4iaZ2DmJc9oZd8BCwl8nKij
++v54pbzyQhNwn1oRRhXy1IwQxTUugOK8+ogB4zJ7Yftg/U6tLaP6jrPPjWEU
+-----END CERTIFICATE-----
+)KEY";
+
+// Device private key PEM
+const char AWS_CERT_PRIVATE[] PROGMEM = R"KEY(
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDKpwPYmWQ3JOSn
+ineL2BCf1ElxkXdno+zB0zkKYfodSeNKiDCJtxMTXxGAAg3OEb1nWTUR8zu/VNo5
+OimQ8061UI+PIf08wY/2uEwQvIV+iY3t9RRZTLMdWXXUNVe1LAgA5AKCsqdcW2TJ
+1ETC3eqpiALNUqyEs19dfNQL0/BNbU49HxL79WHW/Qm/4TTQCIPkE1M72O5d3sIJ
+IxeVJ+Pp/54gZyulhBPMxfK+nhLFtL2HXI8Bd6VL70KVFr08/8eJv8GfR6ks3EyO
+C2QA5ohnWOiXDOxu8ka0nCGDaGz0TDoyx+LtR32fQER6s2zfTLaFXbVcqexFySjI
++FiaeljdAgMBAAECggEAHB7M09OFKnm+GNmH+SnENMl6X331+bWvdr3enmg2ErZc
+Cc2YHqP+y6NXhFHEpKGljJ++U31S/xvBJEvD1M9OTq6dHRl0UGfzmCK+u1vNkl94
+CFsHtdSEzj/Jr+avAv7XJXh+OLCdtJ0iATepSvkMRPYQnXkpY0iYpRpbOkDwiW2w
+RUnohlr+vqFRSXlciud+zFNHed9btpDYsydjAKeGEvWn39h9woOsv81BzfJg6BGX
+qSwMaRymTJUUh+X0oASkL721ZJAJbHo1UzDcVV54m7mOoLnMR90S9fdwd7dbtDez
+Yi/hsUA0NwYlLUNhcpYIqKG3xiZSDFywHSWbANZT6QKBgQDkBnjd1CzP735wi2j7
+lyomUIMVYEPdm5E2QWOopqxa5dnaFEQja8pcS2MHyFE3tuG2EOFecGkN5s0ZK/3t
+yGPyQ1GuAonVd5Sn44PbkcUNorAl15EkuF1l/E1Zr9Y+2le6kvu+4k/ykIT9nljk
+kK6pts6HfGfKg0QHaGF2Gmw4cwKBgQDjg6ntwiyHf8leSr8bF/zjk9e/0vHcZr3x
+daigiA51v2lqfJ2cNk6Y1hAN1bJl/u72RQA9ihomTul94/ztPUkfEySSc1H0dfOl
+3YhkDqotvjx7+Edyw8YslY8QXaAotVy4/3koHvTpfu3UTh86Rml8fTGm7TRx+Cdu
+rtsBK/XlbwKBgEQqyydFrr/a0OnEQ3YzEp6xov5Y8PDm+NpHYguhCBWEcUQImvYb
+2zsMLma9M8p8Ga3cDgO1hzJotRe5Vwgmx/o8tcZXa+0s+nvWQCz7vvT8lbw6XWGk
+3AcJDfap4lqX23IjTq8Z6NyS568KD3kE57JEvCk0v7KC22t7gOdVrtSRAoGAXFGT
+xW9SJFVc/47zBupv6mSWWjcdfyKNlon4t9MdkvftrZENX1LGB8xszUBWWH7etj1/
+gHkmbT7+DeBSRG3m2t4oq+hxa/HkwPwomPk+Yrtbza4MR+xa4MJ7P9fN4lbdXhAE
+OJx/IrQni0t77mid6y7d0+9SpaBdV9NJ+Kq+568CgYEApW6uFICAbC0MaQOwQS5J
+jtTTl67n559xfi0j2O+NEKc7DVNRIUdjCc79pBvcQJdZLCsuLXfHYAscsejubtPV
+t44ZFYPWOc/ytlt50u8ohRu+DhV5Fyq8Ew8h5F1m1Tn1YGr3CXhlSXIb/eoKcuxB
+zXwQRxaQ0Wc5dCGLEvU+l6c=
+-----END PRIVATE KEY-----
+)KEY";
+
+
+
+void connectMQTT() {
+  if (mqtt.connected()) return;
+
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+  mqtt.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+
+  Serial.print("Connecting to AWS IoT MQTT...");
+  unsigned long start = millis();
+  while (!mqtt.connected()) {
+    if (mqtt.connect(MQTT_CLIENT_ID)) {
+      Serial.println("connected to AWS IoT!");
+      return;
+    } else {
+      Serial.print(".");
+      delay(1000);
+    }
+    if (millis() - start > 20000) {
+      Serial.println("\nMQTT connect failed, rebooting");
+      ESP.restart();
+    }
+  }
+}
+
+
+
+
 
 // API endpoints
 const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
@@ -524,6 +651,8 @@ void uploadStoredData() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  
   
   // Suppress WiFi error logs to reduce spam
   esp_log_level_set("wifi", ESP_LOG_NONE); 
@@ -550,6 +679,8 @@ void setup() {
     Serial.println("\nFailed to connect to WiFi. Operating in offline mode.");
     wifiConnected = false;
   }
+
+  connectMQTT();
   
   Serial.println("Initializing MAX30102...");
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
