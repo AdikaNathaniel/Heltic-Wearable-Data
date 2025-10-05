@@ -455,8 +455,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 extern const char* serverURL;
 extern const char* csvUploadURL;
 
-const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
-const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
+// const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
+// const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
+
+
+// Use HTTPS because Render uses SSL
+const char* serverURL = "https://finalyearproject-3-y6io.onrender.com/api/v1/heltec-live-vitals";
+const char* csvUploadURL = "https://finalyearproject-3-y6io.onrender.com/api/v1/csv/upload";
 
 // MAX30102 settings
 #define HR_BUFFER_SIZE 100
@@ -744,9 +749,15 @@ void uploadCSVToServer() {
   String boundary = "----ESP32FormBoundary" + String(millis());
   
   // Hardcoded server details
-  const char* host = "192.168.43.64";
-  const int httpPort = 3100;
-  const char* path = "/api/v1/csv/upload";
+  // const char* host = "192.168.43.64";
+  // const int httpPort = 3100;
+  // const char* path = "/api/v1/csv/upload";
+
+
+  // Render handles HTTPS on port 443 (default), so:
+const char* host = "finalyearproject-3-y6io.onrender.com";
+const int httpPort = 443;
+const char* path = "/api/v1/csv/upload";
   
   WiFiClient client;
   if (!client.connect(host, httpPort)) {
@@ -1455,16 +1466,12 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(serverURL);
-    http.addHeader("Content-Type", "text/plain");
+    http.addHeader("Content-Type", "application/json");
     
     Serial.print("Posting ALL data to server: ");
     Serial.println(jsonString);
     
-    String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
-    Serial.println("Ciphertext is posted");
-    Serial.print("The exact ciphertext that is posted: ");
-    Serial.println(cipherTextBase64);
-    int httpResponseCode = http.POST(cipherTextBase64);
+    int httpResponseCode = http.POST(jsonString);
     
     if (httpResponseCode > 0) {
       String response = http.getString();
@@ -1551,3 +1558,5 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
   }
 }
 
+
+// This is the most workable version for data storage on S3 buckets on AWS
