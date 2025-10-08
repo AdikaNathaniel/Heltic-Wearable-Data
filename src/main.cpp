@@ -16,9 +16,51 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
 #include <PubSubClient.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
 
+// Bluetooth service and characteristics
+BLECharacteristic *pVitalsCharacteristic;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+bool bluetoothActive = false;
+unsigned long lastBluetoothAttempt = 0;
+const unsigned long BLUETOOTH_RETRY_INTERVAL = 30000; // 30 seconds between attempts
+int bluetoothAttempts = 0;
+const int MAX_BLUETOOTH_ATTEMPTS = 2;
 
+// WiFi and MQTT variables
+bool wifiConnected = false;
+bool pendingUpload = false;
+unsigned long lastWifiCheck = 0;
 
+// Add these function declarations:
+void connectMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void checkAndConnectWiFi();
+void printConnectionStatus();
+
+// Bluetooth service UUIDs
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        deviceConnected = true;
+        Serial.println("Bluetooth device connected!");
+        bluetoothActive = true;
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+        deviceConnected = false;
+        Serial.println("Bluetooth device disconnected");
+        bluetoothActive = false;
+        // Restart advertising when device disconnects
+        pServer->getAdvertising()->start();
+        Serial.println("Bluetooth advertising restarted");
+    }
+};
 
 // Keep your hardcoded key and IV as global variables
 byte aesKey[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -145,18 +187,6 @@ String aesDecryptBase64(String cipherBase64, const char* key, const char* iv) {
     return result;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
 // Sensor objects
 MAX30105 particleSensor;
 Adafruit_AS726x as7263;
@@ -171,8 +201,6 @@ BMI270 bmi;
 const char* ssid = "Network";
 const char* password = "jehovahofgrace";
 
-
-
 const char* AWS_IOT_ENDPOINT = "a2gwymvb8cnbld-ats.iot.eu-north-1.amazonaws.com";
 
 // MQTT
@@ -180,11 +208,8 @@ const int AWS_IOT_PORT = 8883;
 const char* MQTT_CLIENT_ID = "heltec-esp32-01"; // unique per device
 const char* MQTT_TOPIC = "heltec/data";
 
-
 WiFiClientSecure net;
 PubSubClient mqtt(net);
-
-
 
 // Amazon Root CA 1 PEM
 const char AWS_CERT_CA[] PROGMEM = R"EOF(
@@ -266,33 +291,144 @@ zXwQRxaQ0Wc5dCGLEvU+l6c=
 -----END PRIVATE KEY-----
 )KEY";
 
+void initializeBluetooth() {
+    if (bluetoothAttempts >= MAX_BLUETOOTH_ATTEMPTS) {
+        Serial.println("Max Bluetooth attempts reached. Switching to WiFi fallback.");
+        return;
+    }
+    
+    Serial.println("Initializing Bluetooth...");
+    
+    BLEDevice::init("ESP32-Vitals-Monitor");
+    BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+    pVitalsCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
 
-// void connectMQTT() {
-//   if (mqtt.connected()) return;
+    pService->start();
+    pServer->getAdvertising()->start();
+    
+    bluetoothActive = true;
+    bluetoothAttempts++;
+    lastBluetoothAttempt = millis();
+    
+    Serial.println("Bluetooth active! Device name: 'ESP32-Vitals-Monitor'");
+    Serial.println("Scan for this device in your Bluetooth app to receive vital signs data.");
+}
 
-//   net.setCACert(AWS_CERT_CA);
-//   net.setCertificate(AWS_CERT_CRT);
-//   net.setPrivateKey(AWS_CERT_PRIVATE);
-//   mqtt.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+void sendDataViaBluetooth(String data) {
+    if (deviceConnected) {
+        pVitalsCharacteristic->setValue(data.c_str());
+        pVitalsCharacteristic->notify();
+        Serial.println("Data sent via Bluetooth: " + data);
+    }
+}
 
-//   Serial.print("Connecting to AWS IoT MQTT...");
-//   unsigned long start = millis();
-//   while (!mqtt.connected()) {
-//     if (mqtt.connect(MQTT_CLIENT_ID)) {
-//       Serial.println("connected to AWS IoT!");
-//       return;
-//     } else {
-//       Serial.print(".");
-//       delay(1000);
-//     }
-//     if (millis() - start > 20000) {
-//       Serial.println("\nMQTT connect failed, rebooting");
-//       ESP.restart();
-//     }
-//   }
-// }
+void checkAndConnectWiFi() {
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!wifiConnected) {
+            wifiConnected = true;
+            Serial.println("WiFi connected! Initializing time and MQTT...");
+            configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+            
+            // Initialize MQTT
+            mqtt.setCallback(mqttCallback);
+            if (!mqtt.connected()) {
+                connectMQTT();
+            }
+            
+            // Check for pending uploads
+            pendingUpload = true;
+        }
+    } else {
+        if (wifiConnected) {
+            Serial.println("WiFi disconnected.");
+            wifiConnected = false;
+        }
+        
+        // Try to reconnect WiFi if not connected
+        Serial.println("Attempting WiFi connection...");
+        WiFi.begin(ssid, password);
+        
+        unsigned long wifiStartTime = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - wifiStartTime < 10000) {
+            delay(500);
+            Serial.print(".");
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiConnected = true;
+            Serial.println("\nWiFi reconnected!");
+            configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+            
+            // Initialize MQTT
+            mqtt.setCallback(mqttCallback);
+            if (!mqtt.connected()) {
+                connectMQTT();
+            }
+            
+            pendingUpload = true;
+        } else {
+            Serial.println("\nWiFi connection failed.");
+        }
+    }
+}
 
+void printConnectionStatus() {
+    Serial.println("\n=== CONNECTION STATUS ===");
+    Serial.print("Bluetooth: ");
+    Serial.println(deviceConnected ? "CONNECTED" : "DISCONNECTED");
+    Serial.print("WiFi: ");
+    Serial.println(WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+    Serial.print("MQTT: ");
+    Serial.println(mqtt.connected() ? "CONNECTED" : "DISCONNECTED");
+    Serial.println("==========================\n");
+}
+
+void manageBluetoothConnection() {
+    // Handle device connection status changes
+    if (!deviceConnected && oldDeviceConnected) {
+        delay(500); // give the bluetooth stack the chance to get things ready
+        oldDeviceConnected = deviceConnected;
+        
+        Serial.println("Bluetooth disconnected - activating WiFi fallback...");
+        
+        // 🔥 FIXED: Force WiFi reconnection check when Bluetooth disconnects
+        wifiConnected = false; // Reset to force recheck
+        checkAndConnectWiFi();
+    }
+    
+    if (deviceConnected && !oldDeviceConnected) {
+        oldDeviceConnected = deviceConnected;
+    }
+    
+    // If Bluetooth not active and we haven't reached max attempts, try to initialize
+    if (!bluetoothActive && bluetoothAttempts < MAX_BLUETOOTH_ATTEMPTS) {
+        if (millis() - lastBluetoothAttempt > BLUETOOTH_RETRY_INTERVAL) {
+            initializeBluetooth();
+        }
+    }
+    
+    // 🔥 FIXED: Improved periodic WiFi status check
+    static unsigned long lastWifiCheck = 0;
+    if (!deviceConnected && (!wifiConnected || !mqtt.connected())) {
+        if (millis() - lastWifiCheck > 15000) { // Check every 15 seconds
+            lastWifiCheck = millis();
+            checkAndConnectWiFi();
+        }
+    }
+    
+    // Maintain MQTT connection if WiFi is connected
+    if (wifiConnected && mqtt.connected()) {
+        mqtt.loop();
+    }
+}
 
 void connectMQTT() {
   if (mqtt.connected()) return;
@@ -308,27 +444,21 @@ void connectMQTT() {
   Serial.print("Connecting to AWS IoT MQTT...");
   unsigned long start = millis();
   
-  while (!mqtt.connected()) {
-    if (mqtt.connect(MQTT_CLIENT_ID)) {
-      Serial.println("connected to AWS IoT!");
-      return;
-    } else {
-      Serial.print(".");
-      Serial.print("Failed, rc=");
-      Serial.print(mqtt.state());
-      Serial.println(" retrying in 1 second...");
-      delay(1000);
-    }
+  while (!mqtt.connect(MQTT_CLIENT_ID)) {
+    Serial.print(".");
+    Serial.print("Failed, rc=");
+    Serial.print(mqtt.state());
+    Serial.println(" retrying in 1 second...");
+    delay(1000);
     
     if (millis() - start > 20000) {
-      Serial.println("\nMQTT connect failed, rebooting");
-      ESP.restart();
+      Serial.println("\nMQTT connect failed, will retry later");
+      return;
     }
   }
+  
+  Serial.println("connected to AWS IoT!");
 }
-
-
-
 
 void debugMQTTConnection() {
     Serial.println("=== MQTT Connection Debug ===");
@@ -366,19 +496,6 @@ void debugMQTTConnection() {
     
     Serial.println("=== Debug Complete ===");
 }
-
-
-// void publishEncryptedData(String encryptedData) {
-//     if (!mqtt.connected()) connectMQTT();
-
-//     bool success = mqtt.publish(MQTT_TOPIC, encryptedData.c_str());
-//     if (success) {
-//         Serial.println("Data published successfully!");
-//     } else {
-//         Serial.println("Failed to publish data.");
-//     }
-// }
-
 
 void publishEncryptedData(String encryptedData) {
     // Ensure we're connected
@@ -435,9 +552,6 @@ void publishEncryptedData(String encryptedData) {
     mqtt.loop();
 }
 
-
-/* Removed stray code block that was outside any function and caused a compile error. */
-
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.print("Message received on topic: ");
     Serial.println(topic);
@@ -449,15 +563,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println();
 }
 
-
-
 // API endpoints
 extern const char* serverURL;
 extern const char* csvUploadURL;
-
-// const char* serverURL = "http://192.168.43.64:3100/api/v1/heltec-live-vitals";
-// const char* csvUploadURL = "http://192.168.43.64:3100/api/v1/csv/upload";
-
 
 // Use HTTPS because Render uses SSL
 const char* serverURL = "https://finalyearproject-3-y6io.onrender.com/api/v1/heltec-live-vitals";
@@ -518,8 +626,7 @@ float avgGyroY = 0;
 float avgGyroZ = 0;
 
 // Data logging variables
-bool wifiConnected = false;
-bool pendingUpload = false;
+// NOTE: wifiConnected and pendingUpload are now declared at the top
 String csvData = "";
 unsigned long lastDataLogTime = 0;
 const unsigned long DATA_LOG_INTERVAL = 1000; // Log data every second
@@ -748,12 +855,6 @@ void uploadCSVToServer() {
   // Generate boundary
   String boundary = "----ESP32FormBoundary" + String(millis());
   
-  // Hardcoded server details
-  // const char* host = "192.168.43.64";
-  // const int httpPort = 3100;
-  // const char* path = "/api/v1/csv/upload";
-
-
   // Render handles HTTPS on port 443 (default), so:
 const char* host = "finalyearproject-3-y6io.onrender.com";
 const int httpPort = 443;
@@ -890,14 +991,10 @@ void uploadStoredData() {
   }
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length); // Forward declaration
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  
-  
   // Suppress WiFi error logs to reduce spam
   esp_log_level_set("wifi", ESP_LOG_NONE); 
   
@@ -905,33 +1002,15 @@ void setup() {
   
   Wire.begin(41, 42);
   
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
+  // FIRST: Initialize Bluetooth (primary communication method)
+  initializeBluetooth();
   
-  unsigned long wifiStartTime = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStartTime < 10000) {
-    delay(500);
-    Serial.print(".");
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nConnected to WiFi");
-    wifiConnected = true;
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    uploadStoredData();
-  } else {
-    Serial.println("\nFailed to connect to WiFi. Operating in offline mode.");
-    wifiConnected = false;
+  // SECOND: If Bluetooth fails after max attempts, fall back to WiFi
+  if (bluetoothAttempts >= MAX_BLUETOOTH_ATTEMPTS && !bluetoothActive) {
+      Serial.println("Bluetooth failed, attempting WiFi connection...");
+      checkAndConnectWiFi();
   }
 
-  mqtt.setCallback(mqttCallback);
-
-  if (!mqtt.connected()) {
-    connectMQTT();
-  }
-  mqtt.loop();
-  
-  
   Serial.println("Initializing MAX30102...");
   if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD, 0x57)) {
     Serial.println("MAX30102 not found. Check wiring.");
@@ -969,6 +1048,10 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
   
+  // Manage Bluetooth connection (this runs in every loop iteration)
+  manageBluetoothConnection();
+  
+  // Your existing WiFi connection management
   if (WiFi.status() != WL_CONNECTED && wifiConnected) {
     Serial.println("WiFi disconnected. Switching to offline mode.");
     wifiConnected = false;
@@ -1308,64 +1391,88 @@ void loop() {
       }
       break;
       
-    case POST_DATA_PHASE:
-if (wifiConnected) {
-  Serial.println("\n=== POSTING ALL VITAL SIGNS TO SERVER ===");
+  case POST_DATA_PHASE:
+      printConnectionStatus(); // Add connection status debug
+      
+      // FIRST: Try to send via Bluetooth if connected
+      if (deviceConnected && bluetoothActive) {
+        Serial.println("\n=== SENDING VITAL SIGNS VIA BLUETOOTH ===");
+        
+        // Prepare JSON data for Bluetooth
+        JsonDocument btDoc;
+        btDoc["glucose"] = avgGlucose;
+        btDoc["systolic_bp"] = avgSysBP;
+        btDoc["diastolic_bp"] = avgDiaBP;
+        btDoc["heart_rate"] = avgHR;
+        btDoc["spo2"] = avgSPO2;
+        btDoc["skin_temp"] = avgTemp;
+        btDoc["body_temp"] = avgBodyTemp;
+        btDoc["accel_x"] = avgAccelX;
+        btDoc["accel_y"] = avgAccelY;
+        btDoc["accel_z"] = avgAccelZ;
+        btDoc["gyro_x"] = avgGyroX;
+        btDoc["gyro_y"] = avgGyroY;
+        btDoc["gyro_z"] = avgGyroZ;
+        btDoc["timestamp"] = getTimestamp();
+        
+        String btJsonString;
+        serializeJson(btDoc, btJsonString);
+        
+        sendDataViaBluetooth(btJsonString);
+        Serial.println("Data successfully sent via Bluetooth!");
+        
+      } 
+      // SECOND: Use WiFi fallback if available
+      else if (WiFi.status() == WL_CONNECTED) {
+        // Ensure MQTT is connected when using WiFi
+        if (!mqtt.connected()) {
+            connectMQTT();
+        }
+        
+        Serial.println("\n=== USING WIFI FALLBACK ===");
+            
+        String testJson = "{\"g\":581,\"s\":269,\"d\":77}";
+        String encrypted = aesEncryptBase64(testJson, (const char*)aesKey, (const char*)aesIV);
+        bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
+        Serial.print("Unencrypted JSON test: ");
+        Serial.println(testSuccess ? "SUCCESS" : "FAILED");
+        publishEncryptedData(encrypted);
 
+        JsonDocument doc;
+        doc["g"] = avgGlucose;
+        doc["s"] = avgSysBP;
+        doc["d"] = avgDiaBP;
+        doc["h"] = avgHR;
+        doc["sp"] = avgSPO2;
+        doc["sk"] = avgTemp;
+        doc["b"] = avgBodyTemp;
+        doc["aclX"] = avgAccelX;
+        doc["aclY"] = avgAccelY;
+        doc["aclZ"] = avgAccelZ;
+        doc["gyX"] = avgGyroX;
+        doc["gyY"] = avgGyroY;
+        doc["gyZ"] = avgGyroZ;
+        String jsonString;
+        serializeJson(doc, jsonString);
 
-  // In your POST_DATA_PHASE case, add this test:
-// String testJson = "{\"glucose\":581.49,\"test\":\"data\"}";
-// bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
-// Serial.print("Unencrypted JSON test: ");
-// Serial.println(testSuccess ? "SUCCESS" : "FAILED");
+        String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
+        Serial.println("=== AES Encrypted Data (Base64) ===");
+        Serial.println(cipherTextBase64);
+        Serial.println("===================================");
 
+        publishEncryptedData(cipherTextBase64);
 
-// Replace your complex JSON with:
-String testJson = "{\"g\":581,\"s\":269,\"d\":77}";
-String encrypted = aesEncryptBase64(testJson, (const char*)aesKey, (const char*)aesIV);
-bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
-Serial.print("Unencrypted JSON test: ");
-Serial.println(testSuccess ? "SUCCESS" : "FAILED");
-publishEncryptedData(encrypted);
-
-  // Prepare JSON string for encryption
-  JsonDocument doc;
-  doc["g"] = avgGlucose;
-  doc["s"] = avgSysBP;
-  doc["d"] = avgDiaBP;
-  doc["h"] = avgHR;
-  doc["sp"] = avgSPO2;
-  doc["sk"] = avgTemp;
-  doc["b"] = avgBodyTemp;
-  doc["aclX"] = avgAccelX;
-  doc["aclY"] = avgAccelY;
-  doc["aclZ"] = avgAccelZ;
-  doc["gyX"] = avgGyroX;
-  doc["gyY"] = avgGyroY;
-  doc["gyZ"] = avgGyroZ;
-  String jsonString;
-  serializeJson(doc, jsonString);
-
-   // --- AES encrypt JSON payload and show in Serial ---
-  String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
-  Serial.println("=== AES Encrypted Data (Base64) ===");
-  Serial.println(cipherTextBase64);
-  Serial.println("===================================");
-
-  publishEncryptedData(cipherTextBase64);
-
-
-  // Decrypt to verify
-  String decryptedText = aesDecryptBase64(cipherTextBase64, (const char*)aesKey, (const char*)aesIV);
-  Serial.println("=== Decrypted Text (Verify) ===");
-  Serial.println(decryptedText);
-} else {
-  Serial.println("\nWiFi not connected. Data stored locally.");
-}
-postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
-                      avgTemp, avgBodyTemp,
-                      avgAccelX, avgAccelY, avgAccelZ,
-                      avgGyroX, avgGyroY, avgGyroZ);
+        String decryptedText = aesDecryptBase64(cipherTextBase64, (const char*)aesKey, (const char*)aesIV);
+        Serial.println("=== Decrypted Text (Verify) ===");
+        Serial.println(decryptedText);
+        
+        postVitalsDataToServer(avgGlucose, avgSysBP, avgDiaBP, avgHR, avgSPO2,
+                              avgTemp, avgBodyTemp,
+                              avgAccelX, avgAccelY, avgAccelZ,
+                              avgGyroX, avgGyroY, avgGyroZ);
+      } else {
+        Serial.println("\nNo communication method available. Data stored locally.");
+      }
       
       // If pending upload (reconnected during cycle), upload stored data now
       if (pendingUpload && wifiConnected) {
@@ -1502,15 +1609,6 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     Serial.println("=== Decrypted Text (Verify) ===");
     Serial.println(decryptedText);
 
-
-
-      // if (httpResponseCode == 201) {
-      //   Serial.println("Post successful!");
-      //   Serial.println("All vital signs posted successfully!");
-      //   uploadCSVToServer();
-      // } else if (httpResponseCode == 500) {
-        // Serial.println("SERVER ERROR: The server encountered an internal error.");
-        
         // Debug Step 3: Check for authentication issues
         HTTPClient testHttp;
         testHttp.begin(serverURL);
@@ -1557,6 +1655,3 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     saveDataToFlash();
   }
 }
-
-
-// This is the most workable version for data storage on S3 buckets on AWS
