@@ -1431,7 +1431,7 @@ void loop() {
         
         Serial.println("\n=== USING WIFI FALLBACK ===");
             
-        String testJson = "{\"g\":581,\"s\":269,\"d\":77}";
+        String testJson = "{\"g\":160,\"s\":150,\"d\":77}";
         String encrypted = aesEncryptBase64(testJson, (const char*)aesKey, (const char*)aesIV);
         bool testSuccess = mqtt.publish(MQTT_TOPIC, testJson.c_str());
         Serial.print("Unencrypted JSON test: ");
