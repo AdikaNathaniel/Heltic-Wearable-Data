@@ -581,17 +581,35 @@ int8_t validSPO2;
 int32_t heartRate;
 int8_t validHeartRate;
 
-// Operation states
+// Operation states - UPDATED with new initial test phase
 enum OperationState {
+  INITIAL_TEST_PHASE,  // NEW: Initial 10-second test phase
   AS7263_PHASE,
   MAX30102_PHASE,
   POST_DATA_PHASE
 };
-OperationState currentState = AS7263_PHASE;
+OperationState currentState = INITIAL_TEST_PHASE; // Start with initial test
 
 // Variables for 2-minute average calculation
 const unsigned long PHASE_DURATION = 120000; // 2 minutes in milliseconds
+const unsigned long INITIAL_TEST_DURATION = 10000; // 10 seconds for initial test
 unsigned long phaseStartTime;
+
+// Variables for initial test phase
+float initialTestGlucose = 0;
+float initialTestSysBP = 0;
+float initialTestDiaBP = 0;
+float initialTestHR = 0;
+float initialTestSPO2 = 0;
+float initialTestTemp = 0;
+float initialTestBodyTemp = 0;
+float initialTestAccelX = 0;
+float initialTestAccelY = 0;
+float initialTestAccelZ = 0;
+float initialTestGyroX = 0;
+float initialTestGyroY = 0;
+float initialTestGyroZ = 0;
+int initialTestCount = 0;
 
 // Arrays to store readings for averaging
 const int MAX_READINGS = 120; // About 120 readings in 2 minutes
@@ -645,6 +663,7 @@ void uploadStoredData();
 void uploadCSVToServer();
 void initializeSPIFFS();
 String formatCSVRow(String timestamp, String sensorType, String data);
+void sendInitialTestData(); // NEW function declaration
 
 // --- Placeholder regression functions ---
 float estimateGlucose(float ch1, float ch2, float ch3) {
@@ -819,7 +838,7 @@ bool validateCSV(String csvContent) {
       fieldIndex++;
     }
     fields[fieldIndex] = line.substring(start);
-    if (fields[1] != "AS7263" && fields[1] != "MAX30102" && fields[1] != "Average Blood Pressure and Glucose Readings" && fields[1] != "Remaining Average Readings" && fields[1] != "FINAL_AVG") {
+    if (fields[1] != "AS7263" && fields[1] != "MAX30102" && fields[1] != "Average Blood Pressure and Glucose Readings" && fields[1] != "Remaining Average Readings" && fields[1] != "FINAL_AVG" && fields[1] != "INITIAL_TEST") {
       Serial.print("Invalid sensorType in CSV: ");
       Serial.println(fields[1]);
       return false;
@@ -856,9 +875,9 @@ void uploadCSVToServer() {
   String boundary = "----ESP32FormBoundary" + String(millis());
   
   // Render handles HTTPS on port 443 (default), so:
-const char* host = "finalyearproject-3-y6io.onrender.com";
-const int httpPort = 443;
-const char* path = "/api/v1/csv/upload";
+  const char* host = "finalyearproject-3-y6io.onrender.com";
+  const int httpPort = 443;
+  const char* path = "/api/v1/csv/upload";
   
   WiFiClient client;
   if (!client.connect(host, httpPort)) {
@@ -991,6 +1010,135 @@ void uploadStoredData() {
   }
 }
 
+// NEW FUNCTION: Send initial test data via Bluetooth or WiFi
+void sendInitialTestData() {
+  Serial.println("\n=== INITIAL 10-SECOND TEST COMPLETE ===");
+  
+  // Calculate averages from initial test
+  if (initialTestCount > 0) {
+    initialTestGlucose /= initialTestCount;
+    initialTestSysBP /= initialTestCount;
+    initialTestDiaBP /= initialTestCount;
+    initialTestHR /= initialTestCount;
+    initialTestSPO2 /= initialTestCount;
+    initialTestTemp /= initialTestCount;
+    initialTestBodyTemp /= initialTestCount;
+    initialTestAccelX /= initialTestCount;
+    initialTestAccelY /= initialTestCount;
+    initialTestAccelZ /= initialTestCount;
+    initialTestGyroX /= initialTestCount;
+    initialTestGyroY /= initialTestCount;
+    initialTestGyroZ /= initialTestCount;
+  }
+  
+  // Print test results
+  Serial.println("Initial Test Results:");
+  Serial.print("Glucose: "); Serial.print(initialTestGlucose); Serial.println(" mg/dL");
+  Serial.print("Sys BP: "); Serial.print(initialTestSysBP); Serial.println(" mmHg");
+  Serial.print("Dia BP: "); Serial.print(initialTestDiaBP); Serial.println(" mmHg");
+  Serial.print("Heart Rate: "); Serial.print(initialTestHR); Serial.println(" bpm");
+  Serial.print("SpO2: "); Serial.print(initialTestSPO2); Serial.println(" %");
+  Serial.print("Skin Temp: "); Serial.print(initialTestTemp); Serial.println(" °C");
+  Serial.print("Body Temp: "); Serial.print(initialTestBodyTemp); Serial.println(" °C");
+  Serial.println("======================================");
+  
+  // Log to CSV
+  String timestamp = getTimestamp();
+  String testData = String(initialTestGlucose) + "," + String(initialTestSysBP) + "," + 
+                    String(initialTestDiaBP) + "," + String(initialTestHR) + "," + 
+                    String(initialTestSPO2) + "," + String(initialTestTemp) + "," + 
+                    String(initialTestBodyTemp) + "," + String(initialTestAccelX) + "," + 
+                    String(initialTestAccelY) + "," + String(initialTestAccelZ) + "," + 
+                    String(initialTestGyroX) + "," + String(initialTestGyroY) + "," + 
+                    String(initialTestGyroZ);
+  logDataToCSV(timestamp, "INITIAL_TEST", testData);
+  saveDataToFlash();
+  
+  printConnectionStatus();
+  
+  // Send via Bluetooth if connected
+  if (deviceConnected && bluetoothActive) {
+    Serial.println("\n=== SENDING INITIAL TEST DATA VIA BLUETOOTH ===");
+    
+    JsonDocument btDoc;
+    btDoc["type"] = "initial_test";
+    btDoc["glucose"] = initialTestGlucose;
+    btDoc["systolic_bp"] = initialTestSysBP;
+    btDoc["diastolic_bp"] = initialTestDiaBP;
+    btDoc["heart_rate"] = initialTestHR;
+    btDoc["spo2"] = initialTestSPO2;
+    btDoc["skin_temp"] = initialTestTemp;
+    btDoc["body_temp"] = initialTestBodyTemp;
+    btDoc["accel_x"] = initialTestAccelX;
+    btDoc["accel_y"] = initialTestAccelY;
+    btDoc["accel_z"] = initialTestAccelZ;
+    btDoc["gyro_x"] = initialTestGyroX;
+    btDoc["gyro_y"] = initialTestGyroY;
+    btDoc["gyro_z"] = initialTestGyroZ;
+    btDoc["timestamp"] = timestamp;
+    
+    String btJsonString;
+    serializeJson(btDoc, btJsonString);
+    
+    sendDataViaBluetooth(btJsonString);
+    Serial.println("Initial test data sent via Bluetooth!");
+  }
+  // Send via WiFi if available
+  else if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n=== SENDING INITIAL TEST DATA VIA WIFI ===");
+    
+    // Ensure MQTT is connected
+    if (!mqtt.connected()) {
+      connectMQTT();
+    }
+    
+    JsonDocument doc;
+    doc["type"] = "initial_test";
+    doc["g"] = initialTestGlucose;
+    doc["s"] = initialTestSysBP;
+    doc["d"] = initialTestDiaBP;
+    doc["h"] = initialTestHR;
+    doc["sp"] = initialTestSPO2;
+    doc["sk"] = initialTestTemp;
+    doc["b"] = initialTestBodyTemp;
+    doc["aclX"] = initialTestAccelX;
+    doc["aclY"] = initialTestAccelY;
+    doc["aclZ"] = initialTestAccelZ;
+    doc["gyX"] = initialTestGyroX;
+    doc["gyY"] = initialTestGyroY;
+    doc["gyZ"] = initialTestGyroZ;
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    String cipherTextBase64 = aesEncryptBase64(jsonString, (const char*)aesKey, (const char*)aesIV);
+    Serial.println("=== Initial Test Encrypted Data (Base64) ===");
+    Serial.println(cipherTextBase64);
+    Serial.println("============================================");
+    
+    publishEncryptedData(cipherTextBase64);
+    Serial.println("Initial test data sent via WiFi!");
+  } else {
+    Serial.println("\nNo communication method available for initial test. Data stored locally.");
+  }
+  
+  // Reset initial test variables
+  initialTestGlucose = 0;
+  initialTestSysBP = 0;
+  initialTestDiaBP = 0;
+  initialTestHR = 0;
+  initialTestSPO2 = 0;
+  initialTestTemp = 0;
+  initialTestBodyTemp = 0;
+  initialTestAccelX = 0;
+  initialTestAccelY = 0;
+  initialTestAccelZ = 0;
+  initialTestGyroX = 0;
+  initialTestGyroY = 0;
+  initialTestGyroZ = 0;
+  initialTestCount = 0;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1039,10 +1187,14 @@ void setup() {
   
   Serial.println("TMP117 Temperature Sensor Initialized");
   
-  Serial.println("Starting with AS7263 sensor for 2 minutes...");
-  Serial.println("Place your finger on the AS7263 sensor.");
+  // NEW: Start with initial 10-second test
+  Serial.println("\n========================================");
+  Serial.println("STARTING INITIAL 10-SECOND SENSOR TEST");
+  Serial.println("========================================");
+  Serial.println("Testing TMP117, MAX30102, BMI270, and AS7263...");
+  Serial.println("Place your finger on both sensors.");
   phaseStartTime = millis();
-  currentState = AS7263_PHASE;
+  currentState = INITIAL_TEST_PHASE;
 }
 
 void loop() {
@@ -1063,6 +1215,159 @@ void loop() {
   }
   
   switch (currentState) {
+    // NEW CASE: Initial 10-second test phase
+    case INITIAL_TEST_PHASE:
+      if (currentTime - phaseStartTime < INITIAL_TEST_DURATION) {
+        unsigned long timeInPhase = currentTime - phaseStartTime;
+        
+        // First 5 seconds: TMP117, MAX30102, BMI270
+        if (timeInPhase < 5000) {
+          Serial.print("Initial Test (TMP/MAX/BMI) - Time: ");
+          Serial.print(timeInPhase / 1000);
+          Serial.println(" seconds");
+          
+          // Read MAX30102
+          bufferLength = 25; // Smaller buffer for quick test
+          for (int i = 0; i < bufferLength; i++) {
+            while (!particleSensor.available()) {
+              particleSensor.check();
+            }
+            redBuffer[i] = particleSensor.getRed();
+            irBuffer[i] = particleSensor.getIR();
+            particleSensor.nextSample();
+          }
+          
+          maxim_heart_rate_and_oxygen_saturation(
+            irBuffer, bufferLength,
+            redBuffer,
+            &spo2, &validSPO2,
+            &heartRate, &validHeartRate);
+          
+          // Read TMP117
+          float skinTemp = getAverageTemp(3);
+          float bodyTemp = skinTemp + CALIBRATION_OFFSET;
+          
+          // Read BMI270
+          bmi.getSensorData();
+          float ax = bmi.data.accelX;
+          float ay = bmi.data.accelY;
+          float az = bmi.data.accelZ;
+          float gx = bmi.data.gyroX;
+          float gy = bmi.data.gyroY;
+          float gz = bmi.data.gyroZ;
+          
+          // Accumulate for averaging
+          if (validHeartRate) initialTestHR += heartRate;
+          if (validSPO2) initialTestSPO2 += spo2;
+          initialTestTemp += skinTemp;
+          initialTestBodyTemp += bodyTemp;
+          initialTestAccelX += ax;
+          initialTestAccelY += ay;
+          initialTestAccelZ += az;
+          initialTestGyroX += gx;
+          initialTestGyroY += gy;
+          initialTestGyroZ += gz;
+          
+          Serial.print("HR: ");
+          Serial.print(validHeartRate ? String(heartRate) : "Invalid");
+          Serial.print(" | SpO2: ");
+          Serial.print(validSPO2 ? String(spo2) : "Invalid");
+          Serial.print(" | Temp: ");
+          Serial.println(skinTemp);
+          
+          initialTestCount++;
+          delay(1000);
+        }
+        // Next 5 seconds: AS7263 + continue other sensors
+        else {
+          Serial.print("Initial Test (AS7263 + All) - Time: ");
+          Serial.print(timeInPhase / 1000);
+          Serial.println(" seconds");
+          
+          // Read AS7263
+          as7263.startMeasurement();
+          delay(750);
+          uint16_t channels[6];
+          for (int i = 0; i < 6; i++) {
+            channels[i] = as7263.readChannel(i);
+          }
+          
+          float glucose = estimateGlucose(channels[0], channels[1], channels[2]);
+          float sysBP = estimateSystolicBP(channels[0], channels[3], channels[5]);
+          float diaBP = estimateDiastolicBP(channels[1], channels[4]);
+          
+          // Read MAX30102
+          bufferLength = 25;
+          for (int i = 0; i < bufferLength; i++) {
+            while (!particleSensor.available()) {
+              particleSensor.check();
+            }
+            redBuffer[i] = particleSensor.getRed();
+            irBuffer[i] = particleSensor.getIR();
+            particleSensor.nextSample();
+          }
+          
+          maxim_heart_rate_and_oxygen_saturation(
+            irBuffer, bufferLength,
+            redBuffer,
+            &spo2, &validSPO2,
+            &heartRate, &validHeartRate);
+          
+          // Read TMP117
+          float skinTemp = getAverageTemp(3);
+          float bodyTemp = skinTemp + CALIBRATION_OFFSET;
+          
+          // Read BMI270
+          bmi.getSensorData();
+          float ax = bmi.data.accelX;
+          float ay = bmi.data.accelY;
+          float az = bmi.data.accelZ;
+          float gx = bmi.data.gyroX;
+          float gy = bmi.data.gyroY;
+          float gz = bmi.data.gyroZ;
+          
+          // Accumulate all readings
+          initialTestGlucose += glucose;
+          initialTestSysBP += sysBP;
+          initialTestDiaBP += diaBP;
+          if (validHeartRate) initialTestHR += heartRate;
+          if (validSPO2) initialTestSPO2 += spo2;
+          initialTestTemp += skinTemp;
+          initialTestBodyTemp += bodyTemp;
+          initialTestAccelX += ax;
+          initialTestAccelY += ay;
+          initialTestAccelZ += az;
+          initialTestGyroX += gx;
+          initialTestGyroY += gy;
+          initialTestGyroZ += gz;
+          
+          Serial.print("Glucose: "); Serial.print(glucose);
+          Serial.print(" | SysBP: "); Serial.print(sysBP);
+          Serial.print(" | DiaBP: "); Serial.print(diaBP);
+          Serial.print(" | HR: ");
+          Serial.print(validHeartRate ? String(heartRate) : "Invalid");
+          Serial.print(" | SpO2: ");
+          Serial.print(validSPO2 ? String(spo2) : "Invalid");
+          Serial.println();
+          
+          initialTestCount++;
+          delay(1000);
+        }
+      } else {
+        // Initial test complete - send data and move to normal operation
+        sendInitialTestData();
+        
+        // Now start normal 2-minute cycles
+        Serial.println("\n========================================");
+        Serial.println("STARTING NORMAL 2-MINUTE CYCLES");
+        Serial.println("========================================");
+        Serial.println("Starting with AS7263 sensor for 2 minutes...");
+        Serial.println("Place your finger on the AS7263 sensor.");
+        phaseStartTime = millis();
+        currentState = AS7263_PHASE;
+      }
+      break;
+    
     case AS7263_PHASE:
       if (currentTime - phaseStartTime < PHASE_DURATION) {
         as7263.startMeasurement();
