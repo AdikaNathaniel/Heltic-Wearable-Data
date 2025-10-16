@@ -643,6 +643,40 @@ float avgGyroX = 0;
 float avgGyroY = 0;
 float avgGyroZ = 0;
 
+// NEW: AS7263 BP and Glucose calculation parameters
+// BP Calculation parameters
+#define SAMPLES_PER_2MIN 40  // 2 minutes / 3 seconds per reading = 40 samples
+#define SAMPLE_INTERVAL 3000 // 3 seconds between readings
+
+// Storage for 2-minute averaging
+float red_sum = 0, orange_sum = 0, yellow_sum = 0;
+float green_sum = 0, blue_sum = 0, violet_sum = 0;
+int as7263_sample_count = 0;
+
+// CORRECTED: Focus on TRUE NIR channels only
+#define WEIGHT_RED     0.00   // Ignore - visible light (610nm)
+#define WEIGHT_ORANGE  0.00   // Ignore - visible light (680nm)
+#define WEIGHT_YELLOW  0.10   // Minimal - borderline NIR (730nm)
+#define WEIGHT_GREEN   0.20   // Use - true NIR (760nm)
+#define WEIGHT_BLUE    0.35   // Use - deep penetration (810nm)
+#define WEIGHT_VIOLET  0.35   // Use - deepest penetration (860nm)
+
+// Glucose-specific NIR weights (different wavelength absorption)
+#define GLUCOSE_WEIGHT_YELLOW  0.15
+#define GLUCOSE_WEIGHT_GREEN   0.30
+#define GLUCOSE_WEIGHT_BLUE    0.40
+#define GLUCOSE_WEIGHT_VIOLET  0.15
+
+// Target BP ranges (unchanged)
+#define SYSTOLIC_MIN   120
+#define SYSTOLIC_MAX   139
+#define DIASTOLIC_MIN  80
+#define DIASTOLIC_MAX  89
+
+// Glucose range (70-135 as requested)
+#define GLUCOSE_MIN    70
+#define GLUCOSE_MAX    135
+
 // Data logging variables
 // NOTE: wifiConnected and pendingUpload are now declared at the top
 String csvData = "";
@@ -665,7 +699,13 @@ void initializeSPIFFS();
 String formatCSVRow(String timestamp, String sensorType, String data);
 void sendInitialTestData(); // NEW function declaration
 
-// --- Placeholder regression functions ---
+// NEW: AS7263 BP and Glucose calculation functions
+void collectAS7263Sample();
+void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic);
+void resetAS7263Accumulators();
+
+// --- Placeholder regression functions (REPLACED by new algorithm) ---
+// These are kept for compatibility but will be replaced by new calculation
 float estimateGlucose(float ch1, float ch2, float ch3) {
   return 80.0 + 0.05 * ch1 - 0.03 * ch2 + 0.02 * ch3;
 }
@@ -875,7 +915,7 @@ void uploadCSVToServer() {
   String boundary = "----ESP32FormBoundary" + String(millis());
   
   // Render handles HTTPS on port 443 (default), so:
-  const char* host = "finalyearproject-3-y6io.onrender.com";
+  const char* host = "https://patient-monitor-backend-patient.fly.dev";
   const int httpPort = 443;
   const char* path = "/api/v1/csv/upload";
   
@@ -1139,6 +1179,177 @@ void sendInitialTestData() {
   initialTestCount = 0;
 }
 
+// NEW: AS7263 BP and Glucose calculation functions
+void collectAS7263Sample() {
+  // Ensure LEDs are on
+  as7263.drvOn();
+  as7263.indicateLED(true);
+  
+  // Start measurement
+  as7263.startMeasurement();
+  
+  // Wait for data
+  unsigned long startTime = millis();
+  while (!as7263.dataReady()) {
+    if (millis() - startTime > 2000) {
+      Serial.println("Timeout - retrying...");
+      return;
+    }
+    delay(10);
+  }
+  
+  // Read calibrated values and accumulate
+  red_sum    += as7263.readCalibratedRed();
+  orange_sum += as7263.readCalibratedOrange();
+  yellow_sum += as7263.readCalibratedYellow();
+  green_sum  += as7263.readCalibratedGreen();
+  blue_sum   += as7263.readCalibratedBlue();
+  violet_sum += as7263.readCalibratedViolet();
+  
+  as7263_sample_count++;
+}
+
+void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic) {
+  if (as7263_sample_count == 0) return;
+  
+  // Calculate 2-minute averages
+  float avg_red    = red_sum / as7263_sample_count;
+  float avg_orange = orange_sum / as7263_sample_count;
+  float avg_yellow = yellow_sum / as7263_sample_count;
+  float avg_green  = green_sum / as7263_sample_count;
+  float avg_blue   = blue_sum / as7263_sample_count;
+  float avg_violet = violet_sum / as7263_sample_count;
+  
+  Serial.println("\n=== AS7263 2-MINUTE AVERAGED READINGS ===");
+  
+  // Show all readings with indicators
+  Serial.print("  [X] Red (610nm):    "); 
+  Serial.print(avg_red, 2); 
+  Serial.println("  [VISIBLE - Ignored]");
+  
+  Serial.print("  [X] Orange (680nm): "); 
+  Serial.print(avg_orange, 2); 
+  Serial.println("  [VISIBLE - Ignored]");
+  
+  Serial.print("  [!] Yellow (730nm): "); 
+  Serial.print(avg_yellow, 2); 
+  Serial.println("  [Border - 10% weight]");
+  
+  Serial.print("  [OK] Green (760nm):  "); 
+  Serial.print(avg_green, 2); 
+  Serial.println("  [TRUE NIR - 20%]");
+  
+  Serial.print("  [OK] Blue (810nm):   "); 
+  Serial.print(avg_blue, 2); 
+  Serial.println("  [TRUE NIR - 35%]");
+  
+  Serial.print("  [OK] Violet (860nm): "); 
+  Serial.print(avg_violet, 2); 
+  Serial.println("  [TRUE NIR - 35%]");
+  
+  // Calculate NIR intensity using ONLY true NIR channels for BP
+  float nir_intensity = (avg_yellow * WEIGHT_YELLOW) +
+                        (avg_green * WEIGHT_GREEN) +
+                        (avg_blue * WEIGHT_BLUE) +
+                        (avg_violet * WEIGHT_VIOLET);
+  
+  Serial.print("\n  NIR Intensity Score: ");
+  Serial.println(nir_intensity, 2);
+  
+  // Normalize to 0-1 range for BP
+  float normalized_intensity = nir_intensity / 1500.0;
+  if (normalized_intensity > 1.0) normalized_intensity = 1.0;
+  if (normalized_intensity < 0.0) normalized_intensity = 0.0;
+  
+  Serial.print("  Normalized Score: ");
+  Serial.println(normalized_intensity, 4);
+  
+  // Map to BP ranges
+  systolic = SYSTOLIC_MIN + (normalized_intensity * (SYSTOLIC_MAX - SYSTOLIC_MIN));
+  diastolic = DIASTOLIC_MIN + (normalized_intensity * (DIASTOLIC_MAX - DIASTOLIC_MIN));
+  
+  // Apply additional modulation based on Blue/Violet ratio for BP
+  float bv_ratio = 0.5;
+  if (avg_violet > 10) {
+    bv_ratio = avg_blue / avg_violet;
+  }
+  
+  Serial.print("  Blue/Violet Ratio: ");
+  Serial.println(bv_ratio, 3);
+  
+  // Adjust BP based on perfusion indicator
+  if (bv_ratio > 0.4) {
+    systolic -= 3;   // Better perfusion = slightly lower BP
+    diastolic -= 2;
+    Serial.println("  Good perfusion detected (-3/-2)");
+  } else if (bv_ratio < 0.2) {
+    systolic += 3;   // Poor perfusion = slightly higher BP
+    diastolic += 2;
+    Serial.println("  Poor perfusion detected (+3/+2)");
+  } else {
+    Serial.println("  Normal perfusion (no adjustment)");
+  }
+  
+  // Ensure within target ranges
+  systolic = constrain(systolic, SYSTOLIC_MIN, SYSTOLIC_MAX);
+  diastolic = constrain(diastolic, DIASTOLIC_MIN, DIASTOLIC_MAX);
+  
+  // Calculate glucose-specific NIR intensity
+  float glucose_intensity = (avg_yellow * GLUCOSE_WEIGHT_YELLOW) +
+                           (avg_green * GLUCOSE_WEIGHT_GREEN) +
+                           (avg_blue * GLUCOSE_WEIGHT_BLUE) +
+                           (avg_violet * GLUCOSE_WEIGHT_VIOLET);
+  
+  Serial.print("\n  Glucose NIR Score: ");
+  Serial.println(glucose_intensity, 2);
+  
+  // Normalize glucose intensity (different scaling than BP)
+  float normalized_glucose = glucose_intensity / 1200.0;
+  if (normalized_glucose > 1.0) normalized_glucose = 1.0;
+  if (normalized_glucose < 0.0) normalized_glucose = 0.0;
+  
+  Serial.print("  Normalized Glucose Score: ");
+  Serial.println(normalized_glucose, 4);
+  
+  // Map to glucose range 70-135 mg/dL
+  glucose = GLUCOSE_MIN + (normalized_glucose * (GLUCOSE_MAX - GLUCOSE_MIN));
+  
+  // Apply glucose-specific adjustments based on wavelength ratios
+  float bg_ratio = 0.5;
+  if (avg_green > 10) {
+    bg_ratio = avg_blue / avg_green;
+  }
+  
+  Serial.print("  Blue/Green Ratio: ");
+  Serial.println(bg_ratio, 3);
+  
+  // Adjust glucose based on absorption characteristics
+  if (bg_ratio > 0.6) {
+    glucose += 5;  // Higher absorption = higher glucose reading
+    Serial.println("  High glucose absorption detected (+5)");
+  } else if (bg_ratio < 0.3) {
+    glucose -= 5;  // Lower absorption = lower glucose reading
+    Serial.println("  Low glucose absorption detected (-5)");
+  } else {
+    Serial.println("  Normal glucose absorption (no adjustment)");
+  }
+  
+  // CONSTRAIN GLUCOSE TO 70-135 RANGE
+  glucose = constrain(glucose, GLUCOSE_MIN, GLUCOSE_MAX);
+  
+
+}
+
+void resetAS7263Accumulators() {
+  red_sum = 0;
+  orange_sum = 0;
+  yellow_sum = 0;
+  green_sum = 0;
+  blue_sum = 0;
+  violet_sum = 0;
+  as7263_sample_count = 0;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -1175,8 +1386,13 @@ void setup() {
     while (1);
   }
   
-  as7263.setIntegrationTime(100);
-  as7263.setGain(3);
+  // Configure AS7263 with improved settings
+  as7263.setIntegrationTime(50);
+  as7263.setGain(GAIN_64X);
+  as7263.drvOn();
+  as7263.indicateLED(true);
+  as7263.setDrvCurrent(LIMIT_12MA5);
+  as7263.setIndicateCurrent(LIMIT_8MA);
   
   Serial.println("Initializing BMI270...");
   if (bmi.beginI2C() != BMI2_OK) {
@@ -1284,17 +1500,12 @@ void loop() {
           Serial.print(timeInPhase / 1000);
           Serial.println(" seconds");
           
-          // Read AS7263
-          as7263.startMeasurement();
-          delay(750);
-          uint16_t channels[6];
-          for (int i = 0; i < 6; i++) {
-            channels[i] = as7263.readChannel(i);
-          }
+          // Read AS7263 using new method
+          collectAS7263Sample();
           
-          float glucose = estimateGlucose(channels[0], channels[1], channels[2]);
-          float sysBP = estimateSystolicBP(channels[0], channels[3], channels[5]);
-          float diaBP = estimateDiastolicBP(channels[1], channels[4]);
+          // Calculate BP and Glucose from AS7263
+          float glucose, systolic, diastolic;
+          calculateBPAndGlucose(glucose, systolic, diastolic);
           
           // Read MAX30102
           bufferLength = 25;
@@ -1328,8 +1539,8 @@ void loop() {
           
           // Accumulate all readings
           initialTestGlucose += glucose;
-          initialTestSysBP += sysBP;
-          initialTestDiaBP += diaBP;
+          initialTestSysBP += systolic;
+          initialTestDiaBP += diastolic;
           if (validHeartRate) initialTestHR += heartRate;
           if (validSPO2) initialTestSPO2 += spo2;
           initialTestTemp += skinTemp;
@@ -1342,8 +1553,8 @@ void loop() {
           initialTestGyroZ += gz;
           
           Serial.print("Glucose: "); Serial.print(glucose);
-          Serial.print(" | SysBP: "); Serial.print(sysBP);
-          Serial.print(" | DiaBP: "); Serial.print(diaBP);
+          Serial.print(" | SysBP: "); Serial.print(systolic);
+          Serial.print(" | DiaBP: "); Serial.print(diastolic);
           Serial.print(" | HR: ");
           Serial.print(validHeartRate ? String(heartRate) : "Invalid");
           Serial.print(" | SpO2: ");
@@ -1356,6 +1567,9 @@ void loop() {
       } else {
         // Initial test complete - send data and move to normal operation
         sendInitialTestData();
+        
+        // Reset AS7263 accumulators for normal operation
+        resetAS7263Accumulators();
         
         // Now start normal 2-minute cycles
         Serial.println("\n========================================");
@@ -1370,16 +1584,12 @@ void loop() {
     
     case AS7263_PHASE:
       if (currentTime - phaseStartTime < PHASE_DURATION) {
-        as7263.startMeasurement();
-        delay(750);
-        uint16_t channels[6];
-        for (int i = 0; i < 6; i++) {
-          channels[i] = as7263.readChannel(i);
-        }
+        // Collect AS7263 sample using new method
+        collectAS7263Sample();
         
-        float glucose = estimateGlucose(channels[0], channels[1], channels[2]);
-        float sysBP = estimateSystolicBP(channels[0], channels[3], channels[5]);
-        float diaBP = estimateDiastolicBP(channels[1], channels[4]);
+        // Calculate BP and Glucose from accumulated AS7263 data
+        float glucose, systolic, diastolic;
+        calculateBPAndGlucose(glucose, systolic, diastolic);
         
         float skinTemp = getAverageTemp();
         float bodyTemp = skinTemp + CALIBRATION_OFFSET;
@@ -1394,8 +1604,8 @@ void loop() {
         
         if (readingCount < MAX_READINGS) {
           glucoseReadings[readingCount] = glucose;
-          sysBPReadings[readingCount] = sysBP;
-          diaBPReadings[readingCount] = diaBP;
+          sysBPReadings[readingCount] = systolic;
+          diaBPReadings[readingCount] = diastolic;
           tempReadings[readingCount] = skinTemp;
           bodyTempReadings[readingCount] = bodyTemp;
           accelXReadings[readingCount] = ax;
@@ -1408,7 +1618,7 @@ void loop() {
         }
         
         String timestamp = getTimestamp();
-        String sensorData = String(glucose) + "," + String(sysBP) + "," + String(diaBP) + ",,," + String(skinTemp) + "," + String(bodyTemp) + "," +
+        String sensorData = String(glucose) + "," + String(systolic) + "," + String(diastolic) + ",,," + String(skinTemp) + "," + String(bodyTemp) + "," +
                             String(ax) + "," + String(ay) + "," + String(az) + "," +
                             String(gx) + "," + String(gy) + "," + String(gz);
         logDataToCSV(timestamp, "AS7263", sensorData);
@@ -1420,9 +1630,9 @@ void loop() {
         Serial.print("Glucose: ");
         Serial.print(glucose);
         Serial.print(" mg/dL | SysBP: ");
-        Serial.print(sysBP);
+        Serial.print(systolic);
         Serial.print(" mmHg | DiaBP: ");
-        Serial.print(diaBP);
+        Serial.print(diastolic);
         Serial.println(" mmHg");
         
         Serial.print("Skin Temperature: ");
@@ -1442,6 +1652,7 @@ void loop() {
         
         delay(2000);
       } else {
+        // Calculate final averages from all readings
         avgGlucose = 0;
         avgSysBP = 0;
         avgDiaBP = 0;
@@ -1515,6 +1726,8 @@ void loop() {
         saveDataToFlash();
         
         resetReadings();
+        resetAS7263Accumulators(); // Reset for next cycle
+        
         Serial.println("Now switching to MAX30102 sensor for 2 minutes...");
         Serial.println("Place your finger on the MAX30102 sensor.");
         Serial.println("Ensure finger is properly placed for accurate heart rate and SpO2 readings.");
@@ -1786,6 +1999,7 @@ void loop() {
       }
       
       resetReadings();
+      resetAS7263Accumulators(); // Reset for next cycle
       Serial.println("Starting new cycle with AS7263 sensor for 2 minutes...");
       Serial.println("Place your finger on the AS7263 sensor.");
       phaseStartTime = millis();
