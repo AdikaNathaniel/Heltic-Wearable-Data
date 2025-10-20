@@ -581,10 +581,6 @@ int8_t validSPO2;
 int32_t heartRate;
 int8_t validHeartRate;
 
-// Heart rate validation constants
-#define MIN_VALID_HR 60   // Minimum valid heart rate (bpm)
-#define MAX_VALID_HR 100  // Maximum valid heart rate (bpm)
-
 // Operation states - UPDATED with new initial test phase
 enum OperationState {
   INITIAL_TEST_PHASE,  // NEW: Initial 10-second test phase
@@ -713,9 +709,9 @@ void collectAS7263Sample();
 void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic);
 void resetAS7263Accumulators();
 
-// NEW: Heart rate validation function
+// NEW: Heart rate validation function - UPDATED: No boundaries, just check if valid from sensor
 bool isValidHeartRate(int32_t hr) {
-    return (hr >= MIN_VALID_HR && hr <= MAX_VALID_HR);
+    return (hr > 0 && validHeartRate); // Only check if sensor reports valid and positive value
 }
 
 // --- Placeholder regression functions (REPLACED by new algorithm) ---
@@ -1494,7 +1490,7 @@ void loop() {
           float gy = bmi.data.gyroY;
           float gz = bmi.data.gyroZ;
           
-          // Accumulate for averaging - FIXED: Only add valid HR readings
+          // Accumulate for averaging - UPDATED: No HR boundaries, just check if valid
           if (validHeartRate && isValidHeartRate(heartRate)) {
             initialTestHR += heartRate;
             initialTestValidHRCount++; // Count only valid readings
@@ -1562,7 +1558,7 @@ void loop() {
           float gy = bmi.data.gyroY;
           float gz = bmi.data.gyroZ;
           
-          // Accumulate all readings - FIXED: Only add valid HR readings
+          // Accumulate all readings - UPDATED: No HR boundaries, just check if valid
           initialTestGlucose += glucose;
           initialTestSysBP += systolic;
           initialTestDiaBP += diastolic;
@@ -1806,9 +1802,9 @@ void loop() {
         float gy = bmi.data.gyroY;
         float gz = bmi.data.gyroZ;
         
-        // FIXED: Only store valid heart rate readings and count them separately
+        // UPDATED: Store heart rate readings without boundaries - only check if valid from sensor
         if (readingCount < MAX_READINGS) {
-          // Store heart rate only if valid and within range
+          // Store heart rate only if valid (no range boundaries)
           if (validHeartRate && isValidHeartRate(heartRate)) {
             hrReadings[readingCount] = heartRate;
             validHRReadingCount++; // Count valid HR readings
@@ -1874,7 +1870,7 @@ void loop() {
         
         delay(1000);
       } else {
-        // FIXED: Calculate averages using only valid readings
+        // UPDATED: Calculate averages using only valid readings without range boundaries
         avgHR = 0;
         avgSPO2 = 0;
         avgTemp = 0;
@@ -1886,7 +1882,7 @@ void loop() {
         avgGyroY = 0;
         avgGyroZ = 0;
         
-        // Calculate HR average using only valid readings
+        // Calculate HR average using only valid readings (no range boundaries)
         if (validHRReadingCount > 0) {
           for (int i = 0; i < readingCount; i++) {
             if (hrReadings[i] != -1) { // Only use valid HR readings
