@@ -581,6 +581,10 @@ int8_t validSPO2;
 int32_t heartRate;
 int8_t validHeartRate;
 
+// Heart rate validation constants
+#define MIN_VALID_HR 60   // Minimum valid heart rate (bpm)
+#define MAX_VALID_HR 100  // Maximum valid heart rate (bpm)
+
 // Operation states - UPDATED with new initial test phase
 enum OperationState {
   INITIAL_TEST_PHASE,  // NEW: Initial 10-second test phase
@@ -610,6 +614,7 @@ float initialTestGyroX = 0;
 float initialTestGyroY = 0;
 float initialTestGyroZ = 0;
 int initialTestCount = 0;
+int initialTestValidHRCount = 0; // NEW: Track valid HR readings separately
 
 // Arrays to store readings for averaging
 const int MAX_READINGS = 120; // About 120 readings in 2 minutes
@@ -627,6 +632,10 @@ float gyroXReadings[MAX_READINGS];
 float gyroYReadings[MAX_READINGS];
 float gyroZReadings[MAX_READINGS];
 int readingCount = 0;
+
+// NEW: Separate counters for valid HR and SpO2 readings
+int validHRReadingCount = 0;
+int validSPO2ReadingCount = 0;
 
 // Variables to store final averages
 float avgGlucose = 0;
@@ -668,7 +677,7 @@ int as7263_sample_count = 0;
 #define GLUCOSE_WEIGHT_VIOLET  0.15
 
 // Target BP ranges (unchanged)
-#define SYSTOLIC_MIN   120
+#define SYSTOLIC_MIN   110
 #define SYSTOLIC_MAX   139
 #define DIASTOLIC_MIN  80
 #define DIASTOLIC_MAX  89
@@ -704,19 +713,24 @@ void collectAS7263Sample();
 void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic);
 void resetAS7263Accumulators();
 
+// NEW: Heart rate validation function
+bool isValidHeartRate(int32_t hr) {
+    return (hr >= MIN_VALID_HR && hr <= MAX_VALID_HR);
+}
+
 // --- Placeholder regression functions (REPLACED by new algorithm) ---
 // These are kept for compatibility but will be replaced by new calculation
-float estimateGlucose(float ch1, float ch2, float ch3) {
-  return 80.0 + 0.05 * ch1 - 0.03 * ch2 + 0.02 * ch3;
-}
+// float estimateGlucose(float ch1, float ch2, float ch3) {
+//   return 80.0 + 0.05 * ch1 - 0.03 * ch2 + 0.02 * ch3;
+// }
 
-float estimateSystolicBP(float ch1, float ch4, float ch6) {
-  return 110.0 + 0.04 * ch1 + 0.01 * ch4 - 0.02 * ch6;
-}
+// float estimateSystolicBP(float ch1, float ch4, float ch6) {
+//   return 110.0 + 0.04 * ch1 + 0.01 * ch4 - 0.02 * ch6;
+// }
 
-float estimateDiastolicBP(float ch2, float ch5) {
-  return 70.0 + 0.03 * ch2 - 0.015 * ch5;
-}
+// float estimateDiastolicBP(float ch2, float ch5) {
+//   return 70.0 + 0.03 * ch2 - 0.015 * ch5;
+// }
 
 // Function to read raw temperature from TMP117
 float readTMP117() {
@@ -932,7 +946,7 @@ void uploadCSVToServer() {
   client.println(" HTTP/1.1");
   client.print("Host: ");
   client.print(host);
-  client.print(":");
+    client.print(":");
   client.print(httpPort);
   client.println();
   client.print("Content-Type: multipart/form-data; boundary=");
@@ -1054,12 +1068,17 @@ void uploadStoredData() {
 void sendInitialTestData() {
   Serial.println("\n=== INITIAL 10-SECOND TEST COMPLETE ===");
   
-  // Calculate averages from initial test
+  // Calculate averages from initial test - FIXED: Use valid counts for HR
   if (initialTestCount > 0) {
     initialTestGlucose /= initialTestCount;
     initialTestSysBP /= initialTestCount;
     initialTestDiaBP /= initialTestCount;
-    initialTestHR /= initialTestCount;
+    // Use valid HR count instead of total count for HR average
+    if (initialTestValidHRCount > 0) {
+      initialTestHR /= initialTestValidHRCount;
+    } else {
+      initialTestHR = 0; // No valid HR readings
+    }
     initialTestSPO2 /= initialTestCount;
     initialTestTemp /= initialTestCount;
     initialTestBodyTemp /= initialTestCount;
@@ -1177,6 +1196,7 @@ void sendInitialTestData() {
   initialTestGyroY = 0;
   initialTestGyroZ = 0;
   initialTestCount = 0;
+  initialTestValidHRCount = 0; // Reset valid HR count
 }
 
 // NEW: AS7263 BP and Glucose calculation functions
@@ -1472,8 +1492,11 @@ void loop() {
           float gy = bmi.data.gyroY;
           float gz = bmi.data.gyroZ;
           
-          // Accumulate for averaging
-          if (validHeartRate) initialTestHR += heartRate;
+          // Accumulate for averaging - FIXED: Only add valid HR readings
+          if (validHeartRate && isValidHeartRate(heartRate)) {
+            initialTestHR += heartRate;
+            initialTestValidHRCount++; // Count only valid readings
+          }
           if (validSPO2) initialTestSPO2 += spo2;
           initialTestTemp += skinTemp;
           initialTestBodyTemp += bodyTemp;
@@ -1537,11 +1560,14 @@ void loop() {
           float gy = bmi.data.gyroY;
           float gz = bmi.data.gyroZ;
           
-          // Accumulate all readings
+          // Accumulate all readings - FIXED: Only add valid HR readings
           initialTestGlucose += glucose;
           initialTestSysBP += systolic;
           initialTestDiaBP += diastolic;
-          if (validHeartRate) initialTestHR += heartRate;
+          if (validHeartRate && isValidHeartRate(heartRate)) {
+            initialTestHR += heartRate;
+            initialTestValidHRCount++; // Count only valid readings
+          }
           if (validSPO2) initialTestSPO2 += spo2;
           initialTestTemp += skinTemp;
           initialTestBodyTemp += bodyTemp;
@@ -1778,9 +1804,25 @@ void loop() {
         float gy = bmi.data.gyroY;
         float gz = bmi.data.gyroZ;
         
+        // FIXED: Only store valid heart rate readings and count them separately
         if (readingCount < MAX_READINGS) {
-          if (validHeartRate) hrReadings[readingCount] = heartRate;
-          if (validSPO2) spo2Readings[readingCount] = spo2;
+          // Store heart rate only if valid and within range
+          if (validHeartRate && isValidHeartRate(heartRate)) {
+            hrReadings[readingCount] = heartRate;
+            validHRReadingCount++; // Count valid HR readings
+          } else {
+            hrReadings[readingCount] = -1; // Mark as invalid
+          }
+          
+          // Store SpO2 only if valid
+          if (validSPO2) {
+            spo2Readings[readingCount] = spo2;
+            validSPO2ReadingCount++; // Count valid SpO2 readings
+          } else {
+            spo2Readings[readingCount] = -1; // Mark as invalid
+          }
+          
+          // Always store other sensor data
           tempReadings[readingCount] = skinTemp;
           bodyTempReadings[readingCount] = bodyTemp;
           accelXReadings[readingCount] = ax;
@@ -1789,11 +1831,14 @@ void loop() {
           gyroXReadings[readingCount] = gx;
           gyroYReadings[readingCount] = gy;
           gyroZReadings[readingCount] = gz;
+          
           readingCount++;
         }
         
         String timestamp = getTimestamp();
-        String sensorData = ",,," + (validHeartRate ? String(heartRate) : "") + "," + (validSPO2 ? String(spo2) : "") + "," + String(skinTemp) + "," + String(bodyTemp) + "," +
+        String hrValue = (validHeartRate && isValidHeartRate(heartRate)) ? String(heartRate) : "";
+        String spo2Value = validSPO2 ? String(spo2) : "";
+        String sensorData = ",,," + hrValue + "," + spo2Value + "," + String(skinTemp) + "," + String(bodyTemp) + "," +
                             String(ax) + "," + String(ay) + "," + String(az) + "," +
                             String(gx) + "," + String(gy) + "," + String(gz);
         logDataToCSV(timestamp, "MAX30102", sensorData);
@@ -1803,7 +1848,7 @@ void loop() {
         Serial.println(" seconds");
         
         Serial.print("Heart Rate: ");
-        if (validHeartRate) Serial.print(heartRate);
+        if (validHeartRate && isValidHeartRate(heartRate)) Serial.print(heartRate);
         else Serial.print("Invalid");
         Serial.print(" bpm | SpO2: ");
         if (validSPO2) Serial.print(spo2);
@@ -1827,6 +1872,7 @@ void loop() {
         
         delay(1000);
       } else {
+        // FIXED: Calculate averages using only valid readings
         avgHR = 0;
         avgSPO2 = 0;
         avgTemp = 0;
@@ -1838,19 +1884,28 @@ void loop() {
         avgGyroY = 0;
         avgGyroZ = 0;
         
-        int validHRCount = 0, validSPO2Count = 0;
+        // Calculate HR average using only valid readings
+        if (validHRReadingCount > 0) {
+          for (int i = 0; i < readingCount; i++) {
+            if (hrReadings[i] != -1) { // Only use valid HR readings
+              avgHR += hrReadings[i];
+            }
+          }
+          avgHR /= validHRReadingCount;
+        }
         
+        // Calculate SpO2 average using only valid readings
+        if (validSPO2ReadingCount > 0) {
+          for (int i = 0; i < readingCount; i++) {
+            if (spo2Readings[i] != -1) { // Only use valid SpO2 readings
+              avgSPO2 += spo2Readings[i];
+            }
+          }
+          avgSPO2 /= validSPO2ReadingCount;
+        }
+        
+        // Calculate averages for other sensors (all readings are valid)
         for (int i = 0; i < readingCount; i++) {
-          if (hrReadings[i] > 0) {
-            avgHR += hrReadings[i];
-            validHRCount++;
-          }
-          
-          if (spo2Readings[i] > 0) {
-            avgSPO2 += spo2Readings[i];
-            validSPO2Count++;
-          }
-          
           avgTemp += tempReadings[i];
           avgBodyTemp += bodyTempReadings[i];
           avgAccelX += accelXReadings[i];
@@ -1860,9 +1915,6 @@ void loop() {
           avgGyroY += gyroYReadings[i];
           avgGyroZ += gyroZReadings[i];
         }
-        
-        if (validHRCount > 0) avgHR /= validHRCount;
-        if (validSPO2Count > 0) avgSPO2 /= validSPO2Count;
         
         avgTemp /= readingCount;
         avgBodyTemp /= readingCount;
@@ -1883,9 +1935,13 @@ void loop() {
         Serial.println("\n=== MAX30102 2-MINUTE READING SUMMARY ===");
         Serial.print("Average Heart Rate: ");
         Serial.print(avgHR);
-        Serial.print(" bpm | Average SpO2: ");
+        Serial.print(" bpm (");
+        Serial.print(validHRReadingCount);
+        Serial.print(" valid readings) | Average SpO2: ");
         Serial.print(avgSPO2);
-        Serial.println(" %");
+        Serial.print(" % (");
+        Serial.print(validSPO2ReadingCount);
+        Serial.println(" valid readings)");
         
         Serial.print("Average Skin Temperature: ");
         Serial.print(avgTemp, 2);
@@ -2010,12 +2066,15 @@ void loop() {
 
 void resetReadings() {
   readingCount = 0;
+  validHRReadingCount = 0;    // Reset valid HR count
+  validSPO2ReadingCount = 0;  // Reset valid SpO2 count
+  
   for (int i = 0; i < MAX_READINGS; i++) {
     glucoseReadings[i] = 0;
     sysBPReadings[i] = 0;
     diaBPReadings[i] = 0;
-    hrReadings[i] = 0;
-    spo2Readings[i] = 0;
+    hrReadings[i] = -1;  // Initialize with -1 to indicate invalid
+    spo2Readings[i] = -1; // Initialize with -1 to indicate invalid
     tempReadings[i] = 0;
     bodyTempReadings[i] = 0;
     accelXReadings[i] = 0;
