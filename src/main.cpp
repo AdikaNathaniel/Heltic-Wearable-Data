@@ -679,7 +679,7 @@ int as7263_sample_count = 0;
 // Target BP ranges (unchanged)
 #define SYSTOLIC_MIN   110
 #define SYSTOLIC_MAX   139
-#define DIASTOLIC_MIN  80
+#define DIASTOLIC_MIN  65
 #define DIASTOLIC_MAX  89
 
 // Glucose range (70-135 as requested)
@@ -731,6 +731,8 @@ bool isValidHeartRate(int32_t hr) {
 // float estimateDiastolicBP(float ch2, float ch5) {
 //   return 70.0 + 0.03 * ch2 - 0.015 * ch5;
 // }
+
+
 
 // Function to read raw temperature from TMP117
 float readTMP117() {
