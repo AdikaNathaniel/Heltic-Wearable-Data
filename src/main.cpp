@@ -568,8 +568,8 @@ extern const char* serverURL;
 extern const char* csvUploadURL;
 
 // Use HTTPS because Render uses SSL
-const char* serverURL = "https://finalyearproject-3-y6io.onrender.com/api/v1/heltec-live-vitals";
-const char* csvUploadURL = "https://finalyearproject-3-y6io.onrender.com/api/v1/csv/upload";
+const char* serverURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/heltec-live-vitals";
+const char* csvUploadURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/csv/upload";
 
 // MAX30102 settings
 #define HR_BUFFER_SIZE 100
