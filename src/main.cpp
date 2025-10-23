@@ -16,12 +16,270 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
 #include <PubSubClient.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
+
+#if __has_include(<NimBLEDevice.h>) && __has_include(<NimBLEUtils.h>) && __has_include(<NimBLEServer.h>) && __has_include(<NimBLEAdvertising.h>)
+#include <NimBLEDevice.h>
+#include <NimBLEUtils.h>
+#include <NimBLEServer.h>
+#include <NimBLEAdvertising.h>
+#else
+// Fallback stub for environments without NimBLE; minimal in-source stub to allow compilation without NimBLE library.
+// NOTE: This stub implements only the types and methods used in this file and DOES NOT provide Bluetooth functionality.
+// Replace with the real NimBLE-Arduino library for full Bluetooth support.
+
+struct ble_gap_conn_desc {
+    int conn_handle;
+};
+
+// Minimal property flags used in createCharacteristic calls
+namespace NIMBLE_PROPERTY {
+    constexpr int READ   = 0x01;
+    constexpr int WRITE  = 0x02;
+    constexpr int NOTIFY = 0x04;
+}
+
+// Forward declarations of classes used by the application
+class NimBLEServer;
+class NimBLEService;
+class NimBLECharacteristic;
+class NimBLEAdvertising;
+class NimBLEServerCallbacks;
+class NimBLECharacteristicCallbacks;
+
+// Minimal characteristic callbacks base
+class NimBLECharacteristicCallbacks {
+public:
+    virtual ~NimBLECharacteristicCallbacks() {}
+    virtual void onRead(NimBLECharacteristic* pCharacteristic) {}
+    virtual void onWrite(NimBLECharacteristic* pCharacteristic) {}
+};
+
+// Minimal server callbacks base
+class NimBLEServerCallbacks {
+public:
+    virtual ~NimBLEServerCallbacks() {}
+    virtual void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {}
+    virtual void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {}
+};
+
+// Minimal characteristic implementation with only methods used in this project
+class NimBLECharacteristic {
+public:
+    NimBLECharacteristic() {}
+    virtual ~NimBLECharacteristic() {}
+
+    // Accept different overloads used by code
+    virtual void setValue(const String &v) { value = v; }
+    virtual void setValue(const char *v) { value = String(v); }
+    virtual String getValue() { return value; }
+    virtual void notify() {}
+    virtual void setCallbacks(NimBLECharacteristicCallbacks* cb) { charCb = cb; }
+
+private:
+    String value;
+    NimBLECharacteristicCallbacks* charCb = nullptr;
+};
+
+// Minimal service implementation
+class NimBLEService {
+public:
+    NimBLEService() {}
+    virtual ~NimBLEService() {}
+    virtual NimBLECharacteristic* createCharacteristic(const char* uuid, int /*properties*/) {
+        return new NimBLECharacteristic();
+    }
+    virtual void start() {}
+};
+
+// Minimal server implementation
+class NimBLEServer {
+public:
+    NimBLEServer() {}
+    virtual ~NimBLEServer() {}
+    virtual void setCallbacks(NimBLEServerCallbacks* cb) { serverCb = cb; }
+    virtual NimBLEService* createService(const char* /*uuid*/) { return new NimBLEService(); }
+    virtual void disconnect(int /*conn_handle*/) {}
+private:
+    NimBLEServerCallbacks* serverCb = nullptr;
+};
+
+// Minimal advertising implementation - CORRECTED METHOD NAME
+class NimBLEAdvertising {
+public:
+    NimBLEAdvertising() {}
+    virtual ~NimBLEAdvertising() {}
+    virtual void addServiceUUID(const char* /*uuid*/) {}
+    virtual void setScanResponse(bool /*enable*/) {}  // CORRECTED: Changed from setScanResponseData
+    virtual void setMinInterval(int /*ms*/) {}
+    virtual void setMaxInterval(int /*ms*/) {}
+    virtual bool start() { return true; }
+};
+
+// Minimal device facade to mimic NimBLEDevice usage
+class NimBLEDeviceClass {
+public:
+    NimBLEDeviceClass() {}
+    void init(const char* /*name*/) {}
+    NimBLEServer* createServer() { return new NimBLEServer(); }
+    NimBLEAdvertising* getAdvertising() { return new NimBLEAdvertising(); }
+    void startAdvertising() {}
+};
+
+// Provide a global instance (renamed) and a namespace shim that exposes the same ::-style API
+static NimBLEDeviceClass NimBLEDeviceInstance;
+
+namespace NimBLEDevice {
+    inline void init(const char* name) { NimBLEDeviceInstance.init(name); }
+    inline NimBLEServer* createServer() { return NimBLEDeviceInstance.createServer(); }
+    inline NimBLEAdvertising* getAdvertising() { return NimBLEDeviceInstance.getAdvertising(); }
+    inline void startAdvertising() { NimBLEDeviceInstance.startAdvertising(); }
+}
+
+#endif
+
+// Forward declarations for functions and variables
+void connectMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void checkAndConnectWiFi();
+void printConnectionStatus();
+String getCurrentAveragedReadings();
+float calculateRunningAverage(float readings[], int validCount);
+int calculateRunningAverage(int readings[], int validCount);
+void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2,
+                           float temperature, float bodyTemperature,
+                           float accelX, float accelY, float accelZ, 
+                           float gyroX, float gyroY, float gyroZ);
+void resetReadings();
+String getTimestamp();
+void logDataToCSV(String timestamp, String sensorType, String data);
+void saveDataToFlash();
+void readDataFromFlash();
+void uploadStoredData();
+void uploadCSVToServer();
+void initializeSPIFFS();
+String formatCSVRow(String timestamp, String sensorType, String data);
+void sendInitialTestData();
+void collectAS7263Sample();
+void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic);
+void resetAS7263Accumulators();
+bool isValidHeartRate(int32_t hr);
+float readTMP117();
+float getAverageTemp(int samples);
+void manageBluetoothConnection();
+void initializeBluetooth();
+void sendDataViaBluetooth(String data);
+void sendInstantDataViaBluetooth();
+void publishEncryptedData(String encryptedData);
+void debugMQTTConnection();
+
+// Operation states - REVERSED ORDER: MAX30102 first, then AS7263
+enum OperationState {
+  INITIAL_TEST_PHASE,  // Initial 10-second test phase
+  MAX30102_PHASE,      // CHANGED: Heart rate and SpO2 first
+  AS7263_PHASE,        // CHANGED: Blood pressure and glucose second
+  POST_DATA_PHASE
+};
+OperationState currentState = INITIAL_TEST_PHASE; // Start with initial test
+
+// Variables for 2-minute average calculation
+const unsigned long PHASE_DURATION = 120000; // 2 minutes in milliseconds
+const unsigned long INITIAL_TEST_DURATION = 10000; // 10 seconds for initial test
+unsigned long phaseStartTime;
+
+// Variables for initial test phase
+float initialTestGlucose = 0;
+float initialTestSysBP = 0;
+float initialTestDiaBP = 0;
+float initialTestHR = 0;
+float initialTestSPO2 = 0;
+float initialTestTemp = 0;
+float initialTestBodyTemp = 0;
+float initialTestAccelX = 0;
+float initialTestAccelY = 0;
+float initialTestAccelZ = 0;
+float initialTestGyroX = 0;
+float initialTestGyroY = 0;
+float initialTestGyroZ = 0;
+int initialTestCount = 0;
+int initialTestValidHRCount = 0; // Track valid HR readings separately
+
+// Arrays to store readings for averaging
+const int MAX_READINGS = 120; // About 120 readings in 2 minutes
+float glucoseReadings[MAX_READINGS];
+float sysBPReadings[MAX_READINGS];
+float diaBPReadings[MAX_READINGS];
+int hrReadings[MAX_READINGS];
+int spo2Readings[MAX_READINGS];
+float tempReadings[MAX_READINGS];
+float bodyTempReadings[MAX_READINGS];
+float accelXReadings[MAX_READINGS];
+float accelYReadings[MAX_READINGS];
+float accelZReadings[MAX_READINGS];
+float gyroXReadings[MAX_READINGS];
+float gyroYReadings[MAX_READINGS];
+float gyroZReadings[MAX_READINGS];
+int readingCount = 0;
+
+// Separate counters for valid HR and SpO2 readings
+int validHRReadingCount = 0;
+int validSPO2ReadingCount = 0;
+
+// Variables to store final averages
+float avgGlucose = 0;
+float avgSysBP = 0;
+float avgDiaBP = 0;
+float avgHR = 0;
+float avgSPO2 = 0;
+float avgTemp = 0;
+float avgBodyTemp = 0;
+float avgAccelX = 0;
+float avgAccelY = 0;
+float avgAccelZ = 0;
+float avgGyroX = 0;
+float avgGyroY = 0;
+float avgGyroZ = 0;
+
+// AS7263 BP and Glucose calculation parameters
+#define SAMPLES_PER_2MIN 40  // 2 minutes / 3 seconds per reading = 40 samples
+#define SAMPLE_INTERVAL 3000 // 3 seconds between readings
+
+// Storage for 2-minute averaging
+float red_sum = 0, orange_sum = 0, yellow_sum = 0;
+float green_sum = 0, blue_sum = 0, violet_sum = 0;
+int as7263_sample_count = 0;
+
+// CORRECTED: Focus on TRUE NIR channels only
+#define WEIGHT_RED     0.00   // Ignore - visible light (610nm)
+#define WEIGHT_ORANGE  0.00   // Ignore - visible light (680nm)
+#define WEIGHT_YELLOW  0.10   // Minimal - borderline NIR (730nm)
+#define WEIGHT_GREEN   0.20   // Use - true NIR (760nm)
+#define WEIGHT_BLUE    0.35   // Use - deep penetration (810nm)
+#define WEIGHT_VIOLET  0.35   // Use - deepest penetration (860nm)
+
+// Glucose-specific NIR weights (different wavelength absorption)
+#define GLUCOSE_WEIGHT_YELLOW  0.15
+#define GLUCOSE_WEIGHT_GREEN   0.30
+#define GLUCOSE_WEIGHT_BLUE    0.40
+#define GLUCOSE_WEIGHT_VIOLET  0.15
+
+// Target BP ranges (unchanged)
+#define SYSTOLIC_MIN   110
+#define SYSTOLIC_MAX   139
+#define DIASTOLIC_MIN  65
+#define DIASTOLIC_MAX  89
+
+// Glucose range (70-135 as requested)
+#define GLUCOSE_MIN    70
+#define GLUCOSE_MAX    135
+
+// Data logging variables
+String csvData = "";
+unsigned long lastDataLogTime = 0;
+const unsigned long DATA_LOG_INTERVAL = 1000; // Log data every second
 
 // Bluetooth service and characteristics
-BLECharacteristic *pVitalsCharacteristic;
+NimBLECharacteristic *pVitalsCharacteristic;
+NimBLECharacteristic *pInstantCharacteristic;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 bool bluetoothActive = false;
@@ -29,36 +287,70 @@ unsigned long lastBluetoothAttempt = 0;
 const unsigned long BLUETOOTH_RETRY_INTERVAL = 30000; // 30 seconds between attempts
 int bluetoothAttempts = 0;
 const int MAX_BLUETOOTH_ATTEMPTS = 2;
+int numConnectedDevices = 0;
 
 // WiFi and MQTT variables
 bool wifiConnected = false;
 bool pendingUpload = false;
 unsigned long lastWifiCheck = 0;
 
-// Add these function declarations:
-void connectMQTT();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
-void checkAndConnectWiFi();
-void printConnectionStatus();
-
 // Bluetooth service UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define INSTANT_READING_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
+// BLE advertising intervals
+#define BLE_ADVERTISING_MIN_INTERVAL 244
+#define BLE_ADVERTISING_MAX_INTERVAL 338
+
+class MyServerCallbacks: public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
+        if (numConnectedDevices >= 2) { // Limit connections to prevent overload
+            pServer->disconnect(desc->conn_handle);
+            return;
+        }
+        
         deviceConnected = true;
-        Serial.println("Bluetooth device connected!");
         bluetoothActive = true;
+        numConnectedDevices++;
+        Serial.println("Bluetooth device connected!");
+        Serial.print("Connected devices: ");
+        Serial.println(numConnectedDevices);
     }
 
-    void onDisconnect(BLEServer* pServer) {
+    void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
         deviceConnected = false;
-        Serial.println("Bluetooth device disconnected");
         bluetoothActive = false;
+        if (numConnectedDevices > 0) {
+            numConnectedDevices--;
+        }
+        Serial.println("Bluetooth device disconnected");
+        Serial.print("Connected devices: ");
+        Serial.println(numConnectedDevices);
+        
         // Restart advertising when device disconnects
-        pServer->getAdvertising()->start();
+        NimBLEDevice::startAdvertising();
         Serial.println("Bluetooth advertising restarted");
+    }
+};
+
+class InstantCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* pCharacteristic) {
+        Serial.println("Mobile app requested instant averaged readings");
+        String instantData = getCurrentAveragedReadings();
+        pCharacteristic->setValue(instantData);
+        Serial.println("Instant averaged readings sent to mobile app");
+    }
+    
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        // Optional: You can also trigger readings on write
+        String request = pCharacteristic->getValue();
+        if (request == "get_reading") {
+            Serial.println("Mobile app triggered instant reading via write");
+            String instantData = getCurrentAveragedReadings();
+            pCharacteristic->setValue(instantData);
+            pCharacteristic->notify();
+        }
     }
 };
 
@@ -268,7 +560,7 @@ OimQ8061UI+PIf08wY/2uEwQvIV+iY3t9RRZTLMdWXXUNVe1LAgA5AKCsqdcW2TJ
 1ETC3eqpiALNUqyEs19dfNQL0/BNbU49HxL79WHW/Qm/4TTQCIPkE1M72O5d3sIJ
 IxeVJ+Pp/54gZyulhBPMxfK+nhLFtL2HXI8Bd6VL70KVFr08/8eJv8GfR6ks3EyO
 C2QA5ohnWOiXDOxu8ka0nCGDaGz0TDoyx+LtR32fQER6s2zfTLaFXbVcqexFySjI
-+FiaeljdAgMBAAECggEAHB7M09OFKnm+GNmH+SnENMl6X331+bWvdr3enmg2ErZc
++FiaeljdAgMBAAoIBAQAcHsz09OFKnm+GNmH+SnENMl6X331+bWvdr3enmg2ErZc
 Cc2YHqP+y6NXhFHEpKGljJ++U31S/xvBJEvD1M9OTq6dHRl0UGfzmCK+u1vNkl94
 CFsHtdSEzj/Jr+avAv7XJXh+OLCdtJ0iATepSvkMRPYQnXkpY0iYpRpbOkDwiW2w
 RUnohlr+vqFRSXlciud+zFNHed9btpDYsydjAKeGEvWn39h9woOsv81BzfJg6BGX
@@ -291,43 +583,186 @@ zXwQRxaQ0Wc5dCGLEvU+l6c=
 -----END PRIVATE KEY-----
 )KEY";
 
+// API endpoints
+extern const char* serverURL;
+extern const char* csvUploadURL;
+
+// Use HTTPS because Render uses SSL
+const char* serverURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/heltec-live-vitals";
+const char* csvUploadURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/csv/upload";
+
+// MAX30102 settings
+#define HR_BUFFER_SIZE 100
+uint32_t irBuffer[HR_BUFFER_SIZE];
+uint32_t redBuffer[HR_BUFFER_SIZE];
+int32_t bufferLength;
+int32_t spo2;
+int8_t validSPO2;
+int32_t heartRate;
+int8_t validHeartRate;
+
 void initializeBluetooth() {
     if (bluetoothAttempts >= MAX_BLUETOOTH_ATTEMPTS) {
         Serial.println("Max Bluetooth attempts reached. Switching to WiFi fallback.");
         return;
     }
     
-    Serial.println("Initializing Bluetooth...");
+    Serial.println("Initializing NimBLE Bluetooth...");
     
-    BLEDevice::init("ESP32-Vitals-Monitor");
-    BLEServer *pServer = BLEDevice::createServer();
+    String bleName = "ESP32-Vitals-Monitor-" + String(esp_random() & 0xFFFF);
+    NimBLEDevice::init(bleName.c_str());
+    
+    NimBLEServer *pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
-    BLEService *pService = pServer->createService(SERVICE_UUID);
+    NimBLEService *pService = pServer->createService(SERVICE_UUID);
+    
+    // Main vitals characteristic (for periodic data)
     pVitalsCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
-        BLECharacteristic::PROPERTY_READ |
-        BLECharacteristic::PROPERTY_WRITE |
-        BLECharacteristic::PROPERTY_NOTIFY
+        NIMBLE_PROPERTY::READ |
+        NIMBLE_PROPERTY::WRITE |
+        NIMBLE_PROPERTY::NOTIFY
     );
 
+    // NEW: Instant reading characteristic for mobile app requests
+    pInstantCharacteristic = pService->createCharacteristic(
+        INSTANT_READING_UUID,
+        NIMBLE_PROPERTY::READ |
+        NIMBLE_PROPERTY::WRITE |
+        NIMBLE_PROPERTY::NOTIFY
+    );
+    pInstantCharacteristic->setCallbacks(new InstantCharacteristicCallbacks());
+
     pService->start();
-    pServer->getAdvertising()->start();
     
-    bluetoothActive = true;
+    NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    // Note: some NimBLE library versions do not implement setScanResponse; skip calling it to ensure compatibility.
+    pAdvertising->setMinInterval(BLE_ADVERTISING_MIN_INTERVAL);
+    pAdvertising->setMaxInterval(BLE_ADVERTISING_MAX_INTERVAL);
+    
+    if (pAdvertising->start()) {
+        Serial.println("NimBLE Advertising Started");
+        bluetoothActive = true;
+    } else {
+        Serial.println("NimBLE Advertising Failed");
+        bluetoothActive = false;
+    }
+    
     bluetoothAttempts++;
     lastBluetoothAttempt = millis();
     
-    Serial.println("Bluetooth active! Device name: 'ESP32-Vitals-Monitor'");
+    Serial.println("NimBLE Bluetooth active! Device name: " + bleName);
     Serial.println("Scan for this device in your Bluetooth app to receive vital signs data.");
+    Serial.println("Mobile app can request instant averaged readings via the instant characteristic.");
 }
 
 void sendDataViaBluetooth(String data) {
-    if (deviceConnected) {
-        pVitalsCharacteristic->setValue(data.c_str());
+    if (deviceConnected && pVitalsCharacteristic) {
+        pVitalsCharacteristic->setValue(data);
         pVitalsCharacteristic->notify();
         Serial.println("Data sent via Bluetooth: " + data);
     }
+}
+
+void sendInstantDataViaBluetooth() {
+    if (deviceConnected && pInstantCharacteristic) {
+        String instantData = getCurrentAveragedReadings();
+        pInstantCharacteristic->setValue(instantData);
+        pInstantCharacteristic->notify();
+        Serial.println("Instant averaged data sent via Bluetooth");
+    }
+}
+
+String getCurrentAveragedReadings() {
+    // Use a small JSON document to prevent memory issues
+    JsonDocument doc;
+    doc["type"] = "instant_reading";
+    doc["timestamp"] = getTimestamp();
+    
+    // Calculate running averages from current data
+    if (readingCount > 0) {
+        // Glucose and BP from AS7263
+        if (currentState == AS7263_PHASE || currentState == POST_DATA_PHASE) {
+            doc["g"] = calculateRunningAverage(glucoseReadings, readingCount);
+            doc["s"] = calculateRunningAverage(sysBPReadings, readingCount);
+            doc["d"] = calculateRunningAverage(diaBPReadings, readingCount);
+        } else {
+            doc["g"] = 0;
+            doc["s"] = 0;
+            doc["d"] = 0;
+        }
+        
+        // HR and SpO2 from MAX30102
+        if (currentState == MAX30102_PHASE || currentState == POST_DATA_PHASE) {
+            doc["h"] = calculateRunningAverage(hrReadings, validHRReadingCount);
+            doc["sp"] = calculateRunningAverage(spo2Readings, validSPO2ReadingCount);
+        } else {
+            doc["h"] = 0;
+            doc["sp"] = 0;
+        }
+        
+        // Temperature and motion (always available)
+        doc["sk"] = calculateRunningAverage(tempReadings, readingCount);
+        doc["b"] = calculateRunningAverage(bodyTempReadings, readingCount);
+        doc["aclX"] = calculateRunningAverage(accelXReadings, readingCount);
+        doc["aclY"] = calculateRunningAverage(accelYReadings, readingCount);
+        doc["aclZ"] = calculateRunningAverage(accelZReadings, readingCount);
+        doc["gyX"] = calculateRunningAverage(gyroXReadings, readingCount);
+        doc["gyY"] = calculateRunningAverage(gyroYReadings, readingCount);
+        doc["gyZ"] = calculateRunningAverage(gyroZReadings, readingCount);
+    } else {
+        // No readings yet
+        doc["g"] = 0;
+        doc["s"] = 0;
+        doc["d"] = 0;
+        doc["h"] = 0;
+        doc["sp"] = 0;
+        doc["sk"] = 0;
+        doc["b"] = 0;
+        doc["aclX"] = 0;
+        doc["aclY"] = 0;
+        doc["aclZ"] = 0;
+        doc["gyX"] = 0;
+        doc["gyY"] = 0;
+        doc["gyZ"] = 0;
+    }
+    
+    doc["reading_count"] = readingCount;
+    doc["valid_hr_count"] = validHRReadingCount;
+    doc["valid_spo2_count"] = validSPO2ReadingCount;
+    doc["current_state"] = (int)currentState;
+    
+    String jsonString;
+    serializeJson(doc, jsonString);
+    return jsonString;
+}
+
+float calculateRunningAverage(float readings[], int validCount) {
+    if (validCount == 0) return 0;
+    float sum = 0;
+    int count = 0;
+    for (int i = 0; i < validCount && i < MAX_READINGS; i++) {
+        if (readings[i] != -1) { // Skip invalid readings
+            sum += readings[i];
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : 0;
+}
+
+int calculateRunningAverage(int readings[], int validCount) {
+    if (validCount == 0) return 0;
+    int sum = 0;
+    int count = 0;
+    for (int i = 0; i < validCount && i < MAX_READINGS; i++) {
+        if (readings[i] != -1) { // Skip invalid readings
+            sum += readings[i];
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : 0;
 }
 
 void checkAndConnectWiFi() {
@@ -384,10 +819,14 @@ void printConnectionStatus() {
     Serial.println("\n=== CONNECTION STATUS ===");
     Serial.print("Bluetooth: ");
     Serial.println(deviceConnected ? "CONNECTED" : "DISCONNECTED");
+    Serial.print("Connected devices: ");
+    Serial.println(numConnectedDevices);
     Serial.print("WiFi: ");
     Serial.println(WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
     Serial.print("MQTT: ");
     Serial.println(mqtt.connected() ? "CONNECTED" : "DISCONNECTED");
+    Serial.print("Free Heap: ");
+    Serial.println(esp_get_free_heap_size());
     Serial.println("==========================\n");
 }
 
@@ -399,7 +838,7 @@ void manageBluetoothConnection() {
         
         Serial.println("Bluetooth disconnected - activating WiFi fallback...");
         
-        // 🔥 FIXED: Force WiFi reconnection check when Bluetooth disconnects
+        // Force WiFi reconnection check when Bluetooth disconnects
         wifiConnected = false; // Reset to force recheck
         checkAndConnectWiFi();
     }
@@ -415,7 +854,7 @@ void manageBluetoothConnection() {
         }
     }
     
-    // 🔥 FIXED: Improved periodic WiFi status check
+    // Improved periodic WiFi status check
     static unsigned long lastWifiCheck = 0;
     if (!deviceConnected && (!wifiConnected || !mqtt.connected())) {
         if (millis() - lastWifiCheck > 15000) { // Check every 15 seconds
@@ -427,6 +866,14 @@ void manageBluetoothConnection() {
     // Maintain MQTT connection if WiFi is connected
     if (wifiConnected && mqtt.connected()) {
         mqtt.loop();
+    }
+    
+    // Check memory periodically
+    static unsigned long lastMemoryCheck = 0;
+    if (millis() - lastMemoryCheck > 30000) {
+        lastMemoryCheck = millis();
+        Serial.print("Memory Check - Free Heap: ");
+        Serial.println(esp_get_free_heap_size());
     }
 }
 
@@ -561,218 +1008,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         Serial.print((char)payload[i]);
     }
     Serial.println();
-}
-
-// API endpoints
-extern const char* serverURL;
-extern const char* csvUploadURL;
-
-// Use HTTPS because Render uses SSL
-const char* serverURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/heltec-live-vitals";
-const char* csvUploadURL = "https://patient-monitor-backend-patient.fly.dev/api/v1/csv/upload";
-
-// MAX30102 settings
-#define HR_BUFFER_SIZE 100
-uint32_t irBuffer[HR_BUFFER_SIZE];
-uint32_t redBuffer[HR_BUFFER_SIZE];
-int32_t bufferLength;
-int32_t spo2;
-int8_t validSPO2;
-int32_t heartRate;
-int8_t validHeartRate;
-
-// Operation states - UPDATED with new initial test phase
-enum OperationState {
-  INITIAL_TEST_PHASE,  // NEW: Initial 10-second test phase
-  AS7263_PHASE,
-  MAX30102_PHASE,
-  POST_DATA_PHASE
-};
-OperationState currentState = INITIAL_TEST_PHASE; // Start with initial test
-
-// Variables for 2-minute average calculation
-const unsigned long PHASE_DURATION = 120000; // 2 minutes in milliseconds
-const unsigned long INITIAL_TEST_DURATION = 10000; // 10 seconds for initial test
-unsigned long phaseStartTime;
-
-// Variables for initial test phase
-float initialTestGlucose = 0;
-float initialTestSysBP = 0;
-float initialTestDiaBP = 0;
-float initialTestHR = 0;
-float initialTestSPO2 = 0;
-float initialTestTemp = 0;
-float initialTestBodyTemp = 0;
-float initialTestAccelX = 0;
-float initialTestAccelY = 0;
-float initialTestAccelZ = 0;
-float initialTestGyroX = 0;
-float initialTestGyroY = 0;
-float initialTestGyroZ = 0;
-int initialTestCount = 0;
-int initialTestValidHRCount = 0; // NEW: Track valid HR readings separately
-
-// Arrays to store readings for averaging
-const int MAX_READINGS = 120; // About 120 readings in 2 minutes
-float glucoseReadings[MAX_READINGS];
-float sysBPReadings[MAX_READINGS];
-float diaBPReadings[MAX_READINGS];
-int hrReadings[MAX_READINGS];
-int spo2Readings[MAX_READINGS];
-float tempReadings[MAX_READINGS];
-float bodyTempReadings[MAX_READINGS];
-float accelXReadings[MAX_READINGS];
-float accelYReadings[MAX_READINGS];
-float accelZReadings[MAX_READINGS];
-float gyroXReadings[MAX_READINGS];
-float gyroYReadings[MAX_READINGS];
-float gyroZReadings[MAX_READINGS];
-int readingCount = 0;
-
-// NEW: Separate counters for valid HR and SpO2 readings
-int validHRReadingCount = 0;
-int validSPO2ReadingCount = 0;
-
-// Variables to store final averages
-float avgGlucose = 0;
-float avgSysBP = 0;
-float avgDiaBP = 0;
-float avgHR = 0;
-float avgSPO2 = 0;
-float avgTemp = 0;
-float avgBodyTemp = 0;
-float avgAccelX = 0;
-float avgAccelY = 0;
-float avgAccelZ = 0;
-float avgGyroX = 0;
-float avgGyroY = 0;
-float avgGyroZ = 0;
-
-// NEW: AS7263 BP and Glucose calculation parameters
-// BP Calculation parameters
-#define SAMPLES_PER_2MIN 40  // 2 minutes / 3 seconds per reading = 40 samples
-#define SAMPLE_INTERVAL 3000 // 3 seconds between readings
-
-// Storage for 2-minute averaging
-float red_sum = 0, orange_sum = 0, yellow_sum = 0;
-float green_sum = 0, blue_sum = 0, violet_sum = 0;
-int as7263_sample_count = 0;
-
-// CORRECTED: Focus on TRUE NIR channels only
-#define WEIGHT_RED     0.00   // Ignore - visible light (610nm)
-#define WEIGHT_ORANGE  0.00   // Ignore - visible light (680nm)
-#define WEIGHT_YELLOW  0.10   // Minimal - borderline NIR (730nm)
-#define WEIGHT_GREEN   0.20   // Use - true NIR (760nm)
-#define WEIGHT_BLUE    0.35   // Use - deep penetration (810nm)
-#define WEIGHT_VIOLET  0.35   // Use - deepest penetration (860nm)
-
-// Glucose-specific NIR weights (different wavelength absorption)
-#define GLUCOSE_WEIGHT_YELLOW  0.15
-#define GLUCOSE_WEIGHT_GREEN   0.30
-#define GLUCOSE_WEIGHT_BLUE    0.40
-#define GLUCOSE_WEIGHT_VIOLET  0.15
-
-// Target BP ranges (unchanged)
-#define SYSTOLIC_MIN   110
-#define SYSTOLIC_MAX   139
-#define DIASTOLIC_MIN  65
-#define DIASTOLIC_MAX  89
-
-// Glucose range (70-135 as requested)
-#define GLUCOSE_MIN    70
-#define GLUCOSE_MAX    135
-
-// Data logging variables
-// NOTE: wifiConnected and pendingUpload are now declared at the top
-String csvData = "";
-unsigned long lastDataLogTime = 0;
-const unsigned long DATA_LOG_INTERVAL = 1000; // Log data every second
-
-// Function declarations
-void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heartRate, float spO2,
-                           float temperature, float bodyTemperature,
-                           float accelX, float accelY, float accelZ, 
-                           float gyroX, float gyroY, float gyroZ);
-void resetReadings();
-String getTimestamp();
-void logDataToCSV(String timestamp, String sensorType, String data);
-void saveDataToFlash();
-void readDataFromFlash();
-void uploadStoredData();
-void uploadCSVToServer();
-void initializeSPIFFS();
-String formatCSVRow(String timestamp, String sensorType, String data);
-void sendInitialTestData(); // NEW function declaration
-
-// NEW: AS7263 BP and Glucose calculation functions
-void collectAS7263Sample();
-void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic);
-void resetAS7263Accumulators();
-
-// NEW: Heart rate validation function - UPDATED: No boundaries, just check if valid from sensor
-bool isValidHeartRate(int32_t hr) {
-    return (hr > 0 && validHeartRate); // Only check if sensor reports valid and positive value
-}
-
-// --- Placeholder regression functions (REPLACED by new algorithm) ---
-// These are kept for compatibility but will be replaced by new calculation
-// float estimateGlucose(float ch1, float ch2, float ch3) {
-//   return 80.0 + 0.05 * ch1 - 0.03 * ch2 + 0.02 * ch3;
-// }
-
-// float estimateSystolicBP(float ch1, float ch4, float ch6) {
-//   return 110.0 + 0.04 * ch1 + 0.01 * ch4 - 0.02 * ch6;
-// }
-
-// float estimateDiastolicBP(float ch2, float ch5) {
-//   return 70.0 + 0.03 * ch2 - 0.015 * ch5;
-// }
-
-
-
-// Function to read raw temperature from TMP117
-float readTMP117() {
-  Wire.beginTransmission(TMP117_ADDR);
-  Wire.write(TMP117_TEMP_REG);
-  Wire.endTransmission(false);
-
-  Wire.requestFrom((uint8_t)TMP117_ADDR, (uint8_t)2);
-
-  if (Wire.available() == 2) {
-    uint16_t raw = (Wire.read() << 8) | Wire.read();
-    float temperature = (int16_t)raw / 128.0;
-    return temperature;
-  }
-
-  return NAN;
-}
-
-// Function to get an averaged temperature reading
-float getAverageTemp(int samples = 5) {
-  float sum = 0;
-  int valid = 0;
-  for (int i = 0; i < samples; i++) {
-    float t = readTMP117();
-    if (!isnan(t)) {
-      sum += t;
-      valid++;
-    }
-    delay(50);
-  }
-  return (valid > 0) ? sum / valid : NAN;
-}
-
-// Function to get current timestamp in ISO 8601 format
-String getTimestamp() {
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
-    return "2023-01-01T00:00:00Z";
-  }
-  
-  char timeString[25];
-  strftime(timeString, sizeof(timeString), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
-  return String(timeString);
 }
 
 // Initialize SPIFFS for data storage
@@ -927,7 +1162,7 @@ void uploadCSVToServer() {
   String boundary = "----ESP32FormBoundary" + String(millis());
   
   // Render handles HTTPS on port 443 (default), so:
-  const char* host = "https://patient-monitor-backend-patient.fly.dev";
+  const char* host = "patient-monitor-backend-patient.fly.dev";
   const int httpPort = 443;
   const char* path = "/api/v1/csv/upload";
   
@@ -943,114 +1178,39 @@ void uploadCSVToServer() {
   client.print(path);
   client.println(" HTTP/1.1");
   client.print("Host: ");
-  client.print(host);
-    client.print(":");
-  client.print(httpPort);
-  client.println();
-  client.print("Content-Type: multipart/form-data; boundary=");
-  client.println(boundary);
-  client.println("Transfer-Encoding: chunked");
+  client.println(host);
+  client.println("Content-Type: multipart/form-data; boundary=" + boundary);
+  client.println("User-Agent: ESP32");
   client.println("Connection: close");
   client.println();
   
-  // First chunk: multipart headers
-  String formHeader = "--" + boundary + "\r\n";
-  formHeader += "Content-Disposition: form-data; name=\"file\"; filename=\"vitals_data.csv\"\r\n";
-  formHeader += "Content-Type: text/csv\r\n\r\n";
+  // Send form data
+  client.println("--" + boundary);
+  client.println("Content-Disposition: form-data; name=\"file\"; filename=\"vitals_data.csv\"");
+  client.println("Content-Type: text/csv");
+  client.println();
   
-  String chunkHeader = String(formHeader.length(), HEX) + "\r\n";
-  client.print(chunkHeader);
-  client.print(formHeader);
-  client.print("\r\n");
-  
-  // Stream file content in chunks
-  const size_t CHUNK_SIZE = 1024;
-  uint8_t buffer[CHUNK_SIZE];
-  size_t totalRead = 0;
-  bool firstChunk = true;
-  String preview = "";
-  
+  // Send file content
   while (file.available()) {
-    size_t bytesRead = file.readBytes((char*)buffer, CHUNK_SIZE);
-    if (bytesRead > 0) {
-      if (firstChunk) {
-        Serial.print("File content length: ");
-        Serial.println(file.size());
-        Serial.println("First 200 chars of CSV:");
-        for (size_t i = 0; i < std::min<size_t>(200ul, bytesRead); i++) {
-          preview += (char)buffer[i];
-        }
-        Serial.println(preview);
-        firstChunk = false;
-      }
-      
-      String chunkSizeStr = String(bytesRead, HEX) + "\r\n";
-      client.print(chunkSizeStr);
-      client.write(buffer, bytesRead);
-      client.print("\r\n");
-      totalRead += bytesRead;
-    }
+    client.write(file.read());
   }
   
+  client.println();
+  client.println("--" + boundary + "--");
+  
   file.close();
-  Serial.print("Total bytes streamed: ");
-  Serial.println(totalRead);
   
-  // Final chunk for multipart closure
-  String multipartClose = "\r\n--" + boundary + "--\r\n";
-  String closeChunkHeader = String(multipartClose.length(), HEX) + "\r\n";
-  client.print(closeChunkHeader);
-  client.print(multipartClose);
-  client.print("\r\n");
-  
-  // End of chunks
-  client.print("0\r\n\r\n");
-  
-  // Read and print response
-  unsigned long timeout = millis() + 10000;
-  String response = "";
-  bool inBody = false;
-  while (client.connected() && millis() < timeout) {
+  // Wait for response
+  unsigned long timeout = millis();
+  while (client.connected() && millis() - timeout < 10000) {
     while (client.available()) {
       String line = client.readStringUntil('\n');
-      line.trim();
-      if (!inBody) {
-        if (line == "") {
-          inBody = true;
-        }
-        Serial.print("Response: ");
-        Serial.println(line);
-      } else {
-        response += line + "\n";
-      }
+      Serial.println(line);
     }
   }
   client.stop();
   
-  Serial.print("Full server response body: ");
-  Serial.println(response);
-  
-  if (response.indexOf("\"success\":true") != -1) {
-    Serial.println("=== CSV UPLOAD SUMMARY ===");
-    Serial.println("Message: Upload successful");
-    Serial.println("Success: true");
-    Serial.println("==========================");
-    
-    Serial.println("Upload successful, deleting local file.");
-    SPIFFS.remove("/vitals_data.csv");
-    File newFile = SPIFFS.open("/vitals_data.csv", FILE_WRITE);
-    if (newFile) {
-      String header = "timestamp,sensorType,glucose,sysBP,diaBP,hr,spo2,skinTemp,bodyTemp,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
-      newFile.print(header);
-      newFile.close();
-    }
-  } else if (response.indexOf("500") != -1 || response.indexOf("Internal server error") != -1) {
-    Serial.println("CSV UPLOAD SERVER ERROR: The server encountered an internal error.");
-    Serial.println("Possible causes (ruled out):");
-    Serial.println("- Invalid CSV format (fixed by column adjustments)");
-    Serial.println("- File too large (streamed fully)");
-    Serial.println("- Check server logs for multer/MongoDB issues");
-  }
+  Serial.println("CSV upload completed");
 }
 
 // Upload stored data to server
@@ -1197,7 +1357,7 @@ void sendInitialTestData() {
   initialTestValidHRCount = 0; // Reset valid HR count
 }
 
-// NEW: AS7263 BP and Glucose calculation functions
+// AS7263 BP and Glucose calculation functions
 void collectAS7263Sample() {
   // Ensure LEDs are on
   as7263.drvOn();
@@ -1354,8 +1514,6 @@ void calculateBPAndGlucose(float &glucose, float &systolic, float &diastolic) {
   
   // CONSTRAIN GLUCOSE TO 70-135 RANGE
   glucose = constrain(glucose, GLUCOSE_MIN, GLUCOSE_MAX);
-  
-
 }
 
 void resetAS7263Accumulators() {
@@ -1366,6 +1524,78 @@ void resetAS7263Accumulators() {
   blue_sum = 0;
   violet_sum = 0;
   as7263_sample_count = 0;
+}
+
+// Function to read raw temperature from TMP117
+float readTMP117() {
+  Wire.beginTransmission(TMP117_ADDR);
+  Wire.write(TMP117_TEMP_REG);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom((uint8_t)TMP117_ADDR, (uint8_t)2);
+
+  if (Wire.available() == 2) {
+    uint16_t raw = (Wire.read() << 8) | Wire.read();
+    float temperature = (int16_t)raw / 128.0;
+    return temperature;
+  }
+
+  return NAN;
+}
+
+// Function to get an averaged temperature reading
+float getAverageTemp(int samples) {
+  float sum = 0;
+  int valid = 0;
+  for (int i = 0; i < samples; i++) {
+    float t = readTMP117();
+    if (!isnan(t)) {
+      sum += t;
+      valid++;
+    }
+    delay(50);
+  }
+  return (valid > 0) ? sum / valid : NAN;
+}
+
+// Function to get current timestamp in ISO 8601 format
+String getTimestamp() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return "2023-01-01T00:00:00Z";
+  }
+  
+  char timeString[25];
+  strftime(timeString, sizeof(timeString), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+  return String(timeString);
+}
+
+// Heart rate validation function - No boundaries, just check if valid from sensor
+bool isValidHeartRate(int32_t hr) {
+    return (hr > 0 && validHeartRate); // Only check if sensor reports valid and positive value
+}
+
+void resetReadings() {
+  readingCount = 0;
+  validHRReadingCount = 0;    // Reset valid HR count
+  validSPO2ReadingCount = 0;  // Reset valid SpO2 count
+  
+  for (int i = 0; i < MAX_READINGS; i++) {
+    glucoseReadings[i] = 0;
+    sysBPReadings[i] = 0;
+    diaBPReadings[i] = 0;
+    hrReadings[i] = -1;  // Initialize with -1 to indicate invalid
+    spo2Readings[i] = -1; // Initialize with -1 to indicate invalid
+    tempReadings[i] = 0;
+    bodyTempReadings[i] = 0;
+    accelXReadings[i] = 0;
+    accelYReadings[i] = 0;
+    accelZReadings[i] = 0;
+    gyroXReadings[i] = 0;
+    gyroYReadings[i] = 0;
+    gyroZReadings[i] = 0;
+  }
 }
 
 void setup() {
@@ -1595,17 +1825,226 @@ void loop() {
         // Reset AS7263 accumulators for normal operation
         resetAS7263Accumulators();
         
-        // Now start normal 2-minute cycles
+        // Now start normal 2-minute cycles - REVERSED ORDER
         Serial.println("\n========================================");
         Serial.println("STARTING NORMAL 2-MINUTE CYCLES");
         Serial.println("========================================");
-        Serial.println("Starting with AS7263 sensor for 2 minutes...");
-        Serial.println("Place your finger on the AS7263 sensor.");
+        Serial.println("Starting with MAX30102 sensor for 2 minutes..."); // CHANGED
+        Serial.println("Place your finger on the MAX30102 sensor for heart rate and SpO2.");
         phaseStartTime = millis();
-        currentState = AS7263_PHASE;
+        currentState = MAX30102_PHASE; // CHANGED: Start with MAX30102 first
       }
       break;
     
+    // CHANGED: MAX30102 phase now comes first
+    case MAX30102_PHASE:
+      if (currentTime - phaseStartTime < PHASE_DURATION) {
+        bufferLength = HR_BUFFER_SIZE;
+        bool lowSignalShown = false;
+        for (int i = 0; i < bufferLength; i++) {
+          while (!particleSensor.available()) {
+            particleSensor.check();
+          }
+          redBuffer[i] = particleSensor.getRed();
+          irBuffer[i] = particleSensor.getIR();
+          particleSensor.nextSample();
+          
+          // Debug MAX30102 signal quality
+          if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
+            if (!lowSignalShown) {
+              lowSignalShown = true;
+            }
+          } else {
+            lowSignalShown = false; // reset when signal improves
+          }
+        }
+        
+        maxim_heart_rate_and_oxygen_saturation(
+          irBuffer, bufferLength,
+          redBuffer,
+          &spo2, &validSPO2,
+          &heartRate, &validHeartRate);
+        
+        float skinTemp = getAverageTemp(5);
+        float bodyTemp = skinTemp + CALIBRATION_OFFSET;
+        
+        bmi.getSensorData();
+        float ax = bmi.data.accelX;
+        float ay = bmi.data.accelY;
+        float az = bmi.data.accelZ;
+        float gx = bmi.data.gyroX;
+        float gy = bmi.data.gyroY;
+        float gz = bmi.data.gyroZ;
+        
+        // Store heart rate readings without boundaries - only check if valid from sensor
+        if (readingCount < MAX_READINGS) {
+          // Store heart rate only if valid (no range boundaries)
+          if (validHeartRate && isValidHeartRate(heartRate)) {
+            hrReadings[readingCount] = heartRate;
+            validHRReadingCount++; // Count valid HR readings
+          } else {
+            hrReadings[readingCount] = -1; // Mark as invalid
+          }
+          
+          // Store SpO2 only if valid
+          if (validSPO2) {
+            spo2Readings[readingCount] = spo2;
+            validSPO2ReadingCount++; // Count valid SpO2 readings
+          } else {
+            spo2Readings[readingCount] = -1; // Mark as invalid
+          }
+          
+          // Always store other sensor data
+          tempReadings[readingCount] = skinTemp;
+          bodyTempReadings[readingCount] = bodyTemp;
+          accelXReadings[readingCount] = ax;
+          accelYReadings[readingCount] = ay;
+          accelZReadings[readingCount] = az;
+          gyroXReadings[readingCount] = gx;
+          gyroYReadings[readingCount] = gy;
+          gyroZReadings[readingCount] = gz;
+          
+          readingCount++;
+        }
+        
+        String timestamp = getTimestamp();
+        String hrValue = (validHeartRate && isValidHeartRate(heartRate)) ? String(heartRate) : "";
+        String spo2Value = validSPO2 ? String(spo2) : "";
+        String sensorData = ",,," + hrValue + "," + spo2Value + "," + String(skinTemp) + "," + String(bodyTemp) + "," +
+                            String(ax) + "," + String(ay) + "," + String(az) + "," +
+                            String(gx) + "," + String(gy) + "," + String(gz);
+        logDataToCSV(timestamp, "MAX30102", sensorData);
+        
+        Serial.print("MAX30102 - Time remaining: ");
+        Serial.print((PHASE_DURATION - (currentTime - phaseStartTime)) / 1000);
+        Serial.println(" seconds");
+        
+        Serial.print("Heart Rate: ");
+        if (validHeartRate && isValidHeartRate(heartRate)) Serial.print(heartRate);
+        else Serial.print("Invalid");
+        Serial.print(" bpm | SpO2: ");
+        if (validSPO2) Serial.print(spo2);
+        else Serial.print("Invalid");
+        Serial.println(" %");
+        
+        Serial.print("Skin Temperature: ");
+        Serial.print(skinTemp, 2);
+        Serial.print(" °C | Estimated Body Temperature: ");
+        Serial.print(bodyTemp, 2);
+        Serial.println(" °C");
+        
+        Serial.print("Accel (m/s^2) X: "); Serial.print(ax, 2);
+        Serial.print(" Y: "); Serial.print(ay, 2);
+        Serial.print(" Z: "); Serial.println(az, 2);
+        
+        Serial.print("Gyro (rad/s) X: "); Serial.print(gx, 2);
+        Serial.print(" Y: "); Serial.print(gy, 2);
+        Serial.print(" Z: "); Serial.println(gz, 2);
+        Serial.println("---------------------------");
+        
+        delay(1000);
+      } else {
+        // Calculate averages using only valid readings without range boundaries
+        avgHR = 0;
+        avgSPO2 = 0;
+        avgTemp = 0;
+        avgBodyTemp = 0;
+        avgAccelX = 0;
+        avgAccelY = 0;
+        avgAccelZ = 0;
+        avgGyroX = 0;
+        avgGyroY = 0;
+        avgGyroZ = 0;
+        
+        // Calculate HR average using only valid readings (no range boundaries)
+        if (validHRReadingCount > 0) {
+          for (int i = 0; i < readingCount; i++) {
+            if (hrReadings[i] != -1) { // Only use valid HR readings
+              avgHR += hrReadings[i];
+            }
+          }
+          avgHR /= validHRReadingCount;
+        }
+        
+        // Calculate SpO2 average using only valid readings
+        if (validSPO2ReadingCount > 0) {
+          for (int i = 0; i < readingCount; i++) {
+            if (spo2Readings[i] != -1) { // Only use valid SpO2 readings
+              avgSPO2 += spo2Readings[i];
+            }
+          }
+          avgSPO2 /= validSPO2ReadingCount;
+        }
+        
+        // Calculate averages for other sensors (all readings are valid)
+        for (int i = 0; i < readingCount; i++) {
+          avgTemp += tempReadings[i];
+          avgBodyTemp += bodyTempReadings[i];
+          avgAccelX += accelXReadings[i];
+          avgAccelY += accelYReadings[i];
+          avgAccelZ += accelZReadings[i];
+          avgGyroX += gyroXReadings[i];
+          avgGyroY += gyroYReadings[i];
+          avgGyroZ += gyroZReadings[i];
+        }
+        
+        avgTemp /= readingCount;
+        avgBodyTemp /= readingCount;
+        avgAccelX /= readingCount;
+        avgAccelY /= readingCount;
+        avgAccelZ /= readingCount;
+        avgGyroX /= readingCount;
+        avgGyroY /= readingCount;
+        avgGyroZ /= readingCount;
+        
+        String timestamp = getTimestamp();
+        String avgData = ",,," + String(avgHR) + "," + String(avgSPO2) + "," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
+                         String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
+                         String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
+        logDataToCSV(timestamp, "Remaining Average Readings", avgData);
+        
+        // Print summary to Serial
+        Serial.println("\n=== MAX30102 2-MINUTE READING SUMMARY ===");
+        Serial.print("Average Heart Rate: ");
+        Serial.print(avgHR);
+        Serial.print(" bpm (");
+        Serial.print(validHRReadingCount);
+        Serial.print(" valid readings) | Average SpO2: ");
+        Serial.print(avgSPO2);
+        Serial.print(" % (");
+        Serial.print(validSPO2ReadingCount);
+        Serial.println(" valid readings)");
+        
+        Serial.print("Average Skin Temperature: ");
+        Serial.print(avgTemp, 2);
+        Serial.print(" °C | Average Body Temperature: ");
+        Serial.print(avgBodyTemp, 2);
+        Serial.println(" °C");
+        
+        Serial.print("Average Accel (m/s^2) X: "); Serial.print(avgAccelX, 2);
+        Serial.print(" Y: "); Serial.print(avgAccelY, 2);
+        Serial.print(" Z: "); Serial.println(avgAccelZ, 2);
+        
+        Serial.print("Average Gyro (rad/s) X: "); Serial.print(avgGyroX, 2);
+        Serial.print(" Y: "); Serial.print(avgGyroY, 2);
+        Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
+        Serial.println("==========================================");
+        
+        // Save to flash immediately after logging summary
+        saveDataToFlash();
+        
+        // CHANGED: Move to AS7263 phase next
+        resetReadings();
+        resetAS7263Accumulators(); // Reset for next cycle
+        
+        Serial.println("Now switching to AS7263 sensor for 2 minutes..."); // CHANGED
+        Serial.println("Place your finger on the AS7263 sensor for blood pressure and glucose readings.");
+        phaseStartTime = millis();
+        currentState = AS7263_PHASE; // CHANGED: Move to AS7263 second
+      }
+      break;
+      
+    // CHANGED: AS7263 phase now comes second
     case AS7263_PHASE:
       if (currentTime - phaseStartTime < PHASE_DURATION) {
         // Collect AS7263 sample using new method
@@ -1615,7 +2054,7 @@ void loop() {
         float glucose, systolic, diastolic;
         calculateBPAndGlucose(glucose, systolic, diastolic);
         
-        float skinTemp = getAverageTemp();
+        float skinTemp = getAverageTemp(5);
         float bodyTemp = skinTemp + CALIBRATION_OFFSET;
         
         bmi.getSensorData();
@@ -1749,216 +2188,6 @@ void loop() {
         // Save to flash immediately after logging summary
         saveDataToFlash();
         
-        resetReadings();
-        resetAS7263Accumulators(); // Reset for next cycle
-        
-        Serial.println("Now switching to MAX30102 sensor for 2 minutes...");
-        Serial.println("Place your finger on the MAX30102 sensor.");
-        Serial.println("Ensure finger is properly placed for accurate heart rate and SpO2 readings.");
-        phaseStartTime = millis();
-        currentState = MAX30102_PHASE;
-      }
-      break;
-      
-    case MAX30102_PHASE:
-      if (currentTime - phaseStartTime < PHASE_DURATION) {
-        bufferLength = HR_BUFFER_SIZE;
-        bool lowSignalShown = false;
-        for (int i = 0; i < bufferLength; i++) {
-          while (!particleSensor.available()) {
-            particleSensor.check();
-          }
-          redBuffer[i] = particleSensor.getRed();
-          irBuffer[i] = particleSensor.getIR();
-          particleSensor.nextSample();
-          
-          // Debug MAX30102 signal quality
-          if (redBuffer[i] < 5000 || irBuffer[i] < 5000) {
-            if (!lowSignalShown) {
-              // Serial.println("DEBUG: Low signal quality detected on MAX30102.");
-              // Serial.println("Ensure finger is properly placed on the sensor.");
-              lowSignalShown = true;
-            }
-            // Serial.println("Heart Rate: INVALID | SpO2: INVALID");
-          } else {
-            lowSignalShown = false; // reset when signal improves
-          }
-        }
-        
-        maxim_heart_rate_and_oxygen_saturation(
-          irBuffer, bufferLength,
-          redBuffer,
-          &spo2, &validSPO2,
-          &heartRate, &validHeartRate);
-        
-        float skinTemp = getAverageTemp();
-        float bodyTemp = skinTemp + CALIBRATION_OFFSET;
-        
-        bmi.getSensorData();
-        float ax = bmi.data.accelX;
-        float ay = bmi.data.accelY;
-        float az = bmi.data.accelZ;
-        float gx = bmi.data.gyroX;
-        float gy = bmi.data.gyroY;
-        float gz = bmi.data.gyroZ;
-        
-        // UPDATED: Store heart rate readings without boundaries - only check if valid from sensor
-        if (readingCount < MAX_READINGS) {
-          // Store heart rate only if valid (no range boundaries)
-          if (validHeartRate && isValidHeartRate(heartRate)) {
-            hrReadings[readingCount] = heartRate;
-            validHRReadingCount++; // Count valid HR readings
-          } else {
-            hrReadings[readingCount] = -1; // Mark as invalid
-          }
-          
-          // Store SpO2 only if valid
-          if (validSPO2) {
-            spo2Readings[readingCount] = spo2;
-            validSPO2ReadingCount++; // Count valid SpO2 readings
-          } else {
-            spo2Readings[readingCount] = -1; // Mark as invalid
-          }
-          
-          // Always store other sensor data
-          tempReadings[readingCount] = skinTemp;
-          bodyTempReadings[readingCount] = bodyTemp;
-          accelXReadings[readingCount] = ax;
-          accelYReadings[readingCount] = ay;
-          accelZReadings[readingCount] = az;
-          gyroXReadings[readingCount] = gx;
-          gyroYReadings[readingCount] = gy;
-          gyroZReadings[readingCount] = gz;
-          
-          readingCount++;
-        }
-        
-        String timestamp = getTimestamp();
-        String hrValue = (validHeartRate && isValidHeartRate(heartRate)) ? String(heartRate) : "";
-        String spo2Value = validSPO2 ? String(spo2) : "";
-        String sensorData = ",,," + hrValue + "," + spo2Value + "," + String(skinTemp) + "," + String(bodyTemp) + "," +
-                            String(ax) + "," + String(ay) + "," + String(az) + "," +
-                            String(gx) + "," + String(gy) + "," + String(gz);
-        logDataToCSV(timestamp, "MAX30102", sensorData);
-        
-        Serial.print("MAX30102 - Time remaining: ");
-        Serial.print((PHASE_DURATION - (currentTime - phaseStartTime)) / 1000);
-        Serial.println(" seconds");
-        
-        Serial.print("Heart Rate: ");
-        if (validHeartRate && isValidHeartRate(heartRate)) Serial.print(heartRate);
-        else Serial.print("Invalid");
-        Serial.print(" bpm | SpO2: ");
-        if (validSPO2) Serial.print(spo2);
-        else Serial.print("Invalid");
-        Serial.println(" %");
-        
-        Serial.print("Skin Temperature: ");
-        Serial.print(skinTemp, 2);
-        Serial.print(" °C | Estimated Body Temperature: ");
-        Serial.print(bodyTemp, 2);
-        Serial.println(" °C");
-        
-        Serial.print("Accel (m/s^2) X: "); Serial.print(ax, 2);
-        Serial.print(" Y: "); Serial.print(ay, 2);
-        Serial.print(" Z: "); Serial.println(az, 2);
-        
-        Serial.print("Gyro (rad/s) X: "); Serial.print(gx, 2);
-        Serial.print(" Y: "); Serial.print(gy, 2);
-        Serial.print(" Z: "); Serial.println(gz, 2);
-        Serial.println("---------------------------");
-        
-        delay(1000);
-      } else {
-        // UPDATED: Calculate averages using only valid readings without range boundaries
-        avgHR = 0;
-        avgSPO2 = 0;
-        avgTemp = 0;
-        avgBodyTemp = 0;
-        avgAccelX = 0;
-        avgAccelY = 0;
-        avgAccelZ = 0;
-        avgGyroX = 0;
-        avgGyroY = 0;
-        avgGyroZ = 0;
-        
-        // Calculate HR average using only valid readings (no range boundaries)
-        if (validHRReadingCount > 0) {
-          for (int i = 0; i < readingCount; i++) {
-            if (hrReadings[i] != -1) { // Only use valid HR readings
-              avgHR += hrReadings[i];
-            }
-          }
-          avgHR /= validHRReadingCount;
-        }
-        
-        // Calculate SpO2 average using only valid readings
-        if (validSPO2ReadingCount > 0) {
-          for (int i = 0; i < readingCount; i++) {
-            if (spo2Readings[i] != -1) { // Only use valid SpO2 readings
-              avgSPO2 += spo2Readings[i];
-            }
-          }
-          avgSPO2 /= validSPO2ReadingCount;
-        }
-        
-        // Calculate averages for other sensors (all readings are valid)
-        for (int i = 0; i < readingCount; i++) {
-          avgTemp += tempReadings[i];
-          avgBodyTemp += bodyTempReadings[i];
-          avgAccelX += accelXReadings[i];
-          avgAccelY += accelYReadings[i];
-          avgAccelZ += accelZReadings[i];
-          avgGyroX += gyroXReadings[i];
-          avgGyroY += gyroYReadings[i];
-          avgGyroZ += gyroZReadings[i];
-        }
-        
-        avgTemp /= readingCount;
-        avgBodyTemp /= readingCount;
-        avgAccelX /= readingCount;
-        avgAccelY /= readingCount;
-        avgAccelZ /= readingCount;
-        avgGyroX /= readingCount;
-        avgGyroY /= readingCount;
-        avgGyroZ /= readingCount;
-        
-        String timestamp = getTimestamp();
-        String avgData = ",,," + String(avgHR) + "," + String(avgSPO2) + "," + String(avgTemp) + "," + String(avgBodyTemp) + "," +
-                         String(avgAccelX) + "," + String(avgAccelY) + "," + String(avgAccelZ) + "," +
-                         String(avgGyroX) + "," + String(avgGyroY) + "," + String(avgGyroZ);
-        logDataToCSV(timestamp, "Remaining Average Readings", avgData);
-        
-        // Print summary to Serial
-        Serial.println("\n=== MAX30102 2-MINUTE READING SUMMARY ===");
-        Serial.print("Average Heart Rate: ");
-        Serial.print(avgHR);
-        Serial.print(" bpm (");
-        Serial.print(validHRReadingCount);
-        Serial.print(" valid readings) | Average SpO2: ");
-        Serial.print(avgSPO2);
-        Serial.print(" % (");
-        Serial.print(validSPO2ReadingCount);
-        Serial.println(" valid readings)");
-        
-        Serial.print("Average Skin Temperature: ");
-        Serial.print(avgTemp, 2);
-        Serial.print(" °C | Average Body Temperature: ");
-        Serial.print(avgBodyTemp, 2);
-        Serial.println(" °C");
-        
-        Serial.print("Average Accel (m/s^2) X: "); Serial.print(avgAccelX, 2);
-        Serial.print(" Y: "); Serial.print(avgAccelY, 2);
-        Serial.print(" Z: "); Serial.println(avgAccelZ, 2);
-        
-        Serial.print("Average Gyro (rad/s) X: "); Serial.print(avgGyroX, 2);
-        Serial.print(" Y: "); Serial.print(avgGyroY, 2);
-        Serial.print(" Z: "); Serial.println(avgGyroZ, 2);
-        Serial.println("==========================================");
-        
-        // Save to flash immediately after logging summary
-        saveDataToFlash();
-        
         currentState = POST_DATA_PHASE;
       }
       break;
@@ -2054,33 +2283,11 @@ void loop() {
       
       resetReadings();
       resetAS7263Accumulators(); // Reset for next cycle
-      Serial.println("Starting new cycle with AS7263 sensor for 2 minutes...");
-      Serial.println("Place your finger on the AS7263 sensor.");
+      Serial.println("Starting new cycle with MAX30102 sensor for 2 minutes..."); // CHANGED
+      Serial.println("Place your finger on the MAX30102 sensor for heart rate and SpO2.");
       phaseStartTime = millis();
-      currentState = AS7263_PHASE;
+      currentState = MAX30102_PHASE; // CHANGED: Start with MAX30102 again
       break;
-  }
-}
-
-void resetReadings() {
-  readingCount = 0;
-  validHRReadingCount = 0;    // Reset valid HR count
-  validSPO2ReadingCount = 0;  // Reset valid SpO2 count
-  
-  for (int i = 0; i < MAX_READINGS; i++) {
-    glucoseReadings[i] = 0;
-    sysBPReadings[i] = 0;
-    diaBPReadings[i] = 0;
-    hrReadings[i] = -1;  // Initialize with -1 to indicate invalid
-    spo2Readings[i] = -1; // Initialize with -1 to indicate invalid
-    tempReadings[i] = 0;
-    bodyTempReadings[i] = 0;
-    accelXReadings[i] = 0;
-    accelYReadings[i] = 0;
-    accelZReadings[i] = 0;
-    gyroXReadings[i] = 0;
-    gyroYReadings[i] = 0;
-    gyroZReadings[i] = 0;
   }
 }
 
@@ -2231,5 +2438,3 @@ void postVitalsDataToServer(float glucose, float sysBP, float diaBP, float heart
     saveDataToFlash();
   }
 }
-
-
